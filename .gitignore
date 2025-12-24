@@ -25,6 +25,11 @@ modules/ec2/keys/*.pem
 modules/ec2/keys/*.pub
 modules/ec2/keys/*.key
 modules/ec2/keys/*.ppk
+*.pem
+*.pub
+*.key
+*.ppk
+
 **/credentials.auto.tfvars
 **/credentials.tfvars
 
