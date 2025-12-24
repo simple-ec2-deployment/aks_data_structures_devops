@@ -66,6 +66,14 @@ terraform/
 
 **Total Resources: 23**
 
+### EC2 Bootstrap & Jenkins
+- The EC2 module includes a `null_resource.bootstrap` that copies and runs `modules/ec2/bootstrap.sh`.
+- Bootstrap installs prerequisites (Docker, kubectl, minikube, Terraform, AWS CLI v2, Java 17, Jenkins).
+- Jenkins is configured to use Java 17, restarted, and the script waits briefly to print:
+  - Jenkins admin password (`/var/lib/jenkins/secrets/initialAdminPassword`)
+  - Jenkins URL using the detected public IP (`http://<public_ip>:8080/`)
+- Root volume is gp3, default 30GB (override `root_volume_size` variable if needed).
+
 ## 🚀 Quick Start
 
 ### Prerequisites

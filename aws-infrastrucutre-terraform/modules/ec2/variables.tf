@@ -58,3 +58,13 @@ variable "security_group_id" {
 variable "instance_name" {
   type = string
 }
+
+variable "ssh_user" {
+  type    = string
+  default = "ubuntu"
+}
+
+variable "root_volume_size" {
+  type    = number
+  default = 30
+}

@@ -1,0 +1,73 @@
+# Terraform local state
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+terraform.tfvars
+*.auto.tfvars
+
+# Terraform overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform providers/plugins cache
+.terraform.lock.hcl
+
+# SSH keys and credentials
+modules/ec2/keys/*.pem
+modules/ec2/keys/*.pub
+modules/ec2/keys/*.key
+modules/ec2/keys/*.ppk
+**/credentials.auto.tfvars
+**/credentials.tfvars
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg
+*.egg-info/
+.eggs/
+.python-version
+.venv/
+venv/
+env/
+
+# Node / front-end artifacts
+node_modules/
+build/
+dist/
+coverage/
+.npm/
+.npmrc
+.yarn/
+.yarnrc
+.pnpm-store/
+
+# Logs and temp
+*.log
+logs/
+.tmp/
+.cache/
+.DS_Store
+
+# IDE / tooling
+.vscode/
+.idea/
+*.iml
+
+# Kubernetes / Minikube
+.kube/
+.minikube/
+
+# Docker
+*.tar

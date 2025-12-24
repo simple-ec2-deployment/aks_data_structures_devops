@@ -13,6 +13,40 @@ resource "aws_instance" "this" {
   }
   vpc_security_group_ids = [var.security_group_id]
 
+  root_block_device {
+    volume_size           = var.root_volume_size
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+}
+
+resource "null_resource" "bootstrap" {
+  depends_on = [aws_instance.this]
+
+  provisioner "file" {
+    source      = "${path.module}/bootstrap.sh"
+    destination = "/home/${var.ssh_user}/bootstrap.sh"
+    connection {
+      host        = aws_instance.this.public_ip
+      user        = var.ssh_user
+      private_key = tls_private_key.stack_key.private_key_pem
+      type        = "ssh"
+    }
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "chmod +x /home/${var.ssh_user}/bootstrap.sh",
+      "sudo -E /home/${var.ssh_user}/bootstrap.sh"
+    ]
+    connection {
+      host        = aws_instance.this.public_ip
+      user        = var.ssh_user
+      private_key = tls_private_key.stack_key.private_key_pem
+      type        = "ssh"
+    }
+  }
 }
 
 # Create a new key pair
