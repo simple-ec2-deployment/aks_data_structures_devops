@@ -93,36 +93,25 @@ pipeline {
  FULL_URL="$(normalize_url "$REPO_URL")"
  echo "Repo (normalized): $FULL_URL"
  echo "Branch: $BRANCH"
- 
- GIT_USER="${GITHUB_USER:-x-access-token}"
+
  if [ -n "${GITHUB_PASS:-}" ]; then
-   GIT_PASS="$GITHUB_PASS"
+   TOKEN="$GITHUB_PASS"
  else
-   GIT_PASS="$GITHUB_PAT"
+   TOKEN="$GITHUB_PAT"
  fi
- export GIT_USER GIT_PASS
- 
- cat >/tmp/git-askpass.sh <<'EOF'
- #!/bin/sh
- case "$1" in
-   Username*) echo "$GIT_USER" ;;
-   Password*) echo "$GIT_PASS" ;;
- esac
- EOF
- chmod +x /tmp/git-askpass.sh
- export GIT_ASKPASS=/tmp/git-askpass.sh
- export GIT_TERMINAL_PROMPT=0
+ AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+ AUTH_HEADER="Authorization: Basic $AUTH_B64"
  
  if [ ! -d "$REPO_DIR/.git" ]; then
    mkdir -p "$REPO_DIR"
    echo "Cloning repository from branch: $BRANCH..."
-   git clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
+   git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
  else
    echo "Repository exists, pulling latest changes from branch: $BRANCH..."
    cd "$REPO_DIR"
    git config --global --add safe.directory "$REPO_DIR"
    git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-   git pull "$FULL_URL" "$BRANCH" || {
+   git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
      echo "Pull failed, trying to reset..."
      git fetch --all
      git reset --hard "origin/$BRANCH"
@@ -169,25 +158,14 @@ SCRIPT
    local input="$1"
    echo "$input" | sed -E "s|^https://github.com/||; s|^http://github.com/||"
  }
- 
- GIT_USER="${GITHUB_USER:-x-access-token}"
+
  if [ -n "${GITHUB_PASS:-}" ]; then
-   GIT_PASS="$GITHUB_PASS"
+   TOKEN="$GITHUB_PASS"
  else
-   GIT_PASS="$GITHUB_PAT"
+   TOKEN="$GITHUB_PAT"
  fi
- export GIT_USER GIT_PASS
- 
- cat >/tmp/git-askpass.sh <<'EOF'
- #!/bin/sh
- case "$1" in
-   Username*) echo "$GIT_USER" ;;
-   Password*) echo "$GIT_PASS" ;;
- esac
- EOF
- chmod +x /tmp/git-askpass.sh
- export GIT_ASKPASS=/tmp/git-askpass.sh
- export GIT_TERMINAL_PROMPT=0
+ AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+ AUTH_HEADER="Authorization: Basic $AUTH_B64"
  
  clone_or_update() {
    local url="$1"; local dir="$2"
@@ -195,13 +173,13 @@ SCRIPT
    local clean="$(sanitize_url "$full")"
    if [ ! -d "$dir/.git" ]; then
      echo "Cloning $clean to $dir (branch: $BRANCH) ..."
-     git clone -b "$BRANCH" "$full" "$dir"
+     git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$full" "$dir"
    else
      echo "Updating $dir (branch: $BRANCH) ..."
      cd "$dir"
      git config --global --add safe.directory "$dir"
      git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-     git pull "$full" "$BRANCH" || { git fetch --all; git reset --hard "origin/$BRANCH"; }
+     git -c http.extraHeader="$AUTH_HEADER" pull "$full" "$BRANCH" || { git fetch --all; git reset --hard "origin/$BRANCH"; }
    fi
  }
  
@@ -235,6 +213,10 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            # Fix permissions from earlier sudo/root runs
+                            sudo mkdir -p /home/${EC2_USER}/.minikube /home/${EC2_USER}/.kube
+                            sudo chown -R ${EC2_USER}:${EC2_USER} /home/${EC2_USER}/.minikube /home/${EC2_USER}/.kube
+
                             # Check if Minikube is running
                             if minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q 'Running'; then
                                 echo '✓ Minikube is already running'
