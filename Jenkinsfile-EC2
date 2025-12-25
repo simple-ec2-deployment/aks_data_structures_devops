@@ -73,33 +73,33 @@ pipeline {
                         # Test SSH connection
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
                         
-                        # Clone or pull repository (force bash and default branch fallback)
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "bash -lc '
-                            REPO_DIR=\"${REPO_DIR}\"
-                            REPO_URL=\"${REPO_URL}\"
-                            GITHUB_PAT=\"${GITHUB_PAT}\"
-                            BRANCH_NAME=\"${BRANCH_NAME}\"
-                            BRANCH=\"${BRANCH_NAME:-main}\"
-                            
-                            if [ ! -d \"${REPO_DIR}\" ]; then
-                                echo \"Cloning repository from branch: ${BRANCH}...\"
-                                git clone -b \"${BRANCH}\" \"https://${GITHUB_PAT}@${REPO_URL}\" \"${REPO_DIR}\"
-                            else
-                                echo \"Repository exists, pulling latest changes from branch: ${BRANCH}...\"
-                                cd \"${REPO_DIR}\"
-                                git config --global --add safe.directory \"${REPO_DIR}\"
-                                git checkout \"${BRANCH}\" || git checkout -b \"${BRANCH}\" \"origin/${BRANCH}\"
-                                git pull \"https://${GITHUB_PAT}@${REPO_URL}\" \"${BRANCH}\" || {
-                                    echo \"Pull failed, trying to reset...\"
-                                    git fetch --all
-                                    git reset --hard \"origin/${BRANCH}\"
-                                }
-                            fi
-                            
-                            cd \"${REPO_DIR}\"
-                            echo \"Current branch:\" $(git rev-parse --abbrev-ref HEAD)
-                            echo \"Latest commit:\" $(git rev-parse --short HEAD)
-                        '"
+                        # Clone or pull repository (force bash, safe default branch)
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH=${BRANCH_NAME:-main} REPO_DIR=${REPO_DIR} REPO_URL=${REPO_URL} GITHUB_PAT=${GITHUB_PAT} bash -lc 'cat <<\"SCRIPT\" | bash
+set -e
+echo \"Repo: \$REPO_URL\"
+echo \"Branch: \$BRANCH\"
+
+if [ ! -d \"\$REPO_DIR/.git\" ]; then
+  mkdir -p \"\$REPO_DIR\"
+  echo \"Cloning repository from branch: \$BRANCH...\"
+  git clone -b \"\$BRANCH\" \"https://\$GITHUB_PAT@\${REPO_URL}\" \"\$REPO_DIR\"
+else
+  echo \"Repository exists, pulling latest changes from branch: \$BRANCH...\"
+  cd \"\$REPO_DIR\"
+  git config --global --add safe.directory \"\$REPO_DIR\"
+  git checkout \"\$BRANCH\" || git checkout -b \"\$BRANCH\" \"origin/\$BRANCH\"
+  git pull \"https://\$GITHUB_PAT@\${REPO_URL}\" \"\$BRANCH\" || {
+    echo \"Pull failed, trying to reset...\"
+    git fetch --all
+    git reset --hard \"origin/\$BRANCH\"
+  }
+fi
+
+cd \"\$REPO_DIR\"
+echo \"Current branch: $(git branch --show-current)\"
+echo \"Latest commit:  $(git rev-parse --short HEAD)\"
+SCRIPT'"
                     '''
                 }
             }
@@ -115,48 +115,44 @@ pipeline {
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "bash -lc '
-                            BRANCH=\"${BRANCH_NAME:-main}\"
-                            GITHUB_PAT=\"${GITHUB_PAT}\"
-                            API_REPO=\"${API_REPO_URL}\"
-                            FRONTEND_REPO=\"${FRONTEND_REPO_URL}\"
-                            API_DIR=\"${API_DIR}\"
-                            FRONTEND_DIR=\"${FRONTEND_DIR}\"
-                            
-                            sanitize_url() {
-                              local input=\"$1\"
-                              echo \"$input\" | sed -E 's|^git@github.com:|github.com/|; s|^https://github.com/|github.com/|; s|^http://github.com/|github.com/|'
-                            }
-                            
-                            clone_or_update() {
-                              local url=\"$1\"; local dir=\"$2\"
-                              local clean=\"$(sanitize_url \"$url\")\"
-                              if [ ! -d \"$dir/.git\" ]; then
-                                echo \"Cloning $clean to $dir (branch: $BRANCH) ...\"
-                                git clone -b \"$BRANCH\" \"https://${GITHUB_PAT}@$clean\" \"$dir\"
-                              else
-                                echo \"Updating $dir (branch: $BRANCH) ...\"
-                                cd \"$dir\"
-                                git config --global --add safe.directory \"$dir\"
-                                git checkout \"$BRANCH\" || git checkout -b \"$BRANCH\" \"origin/$BRANCH\"
-                                git pull \"https://${GITHUB_PAT}@$clean\" \"$BRANCH\" || { git fetch --all; git reset --hard \"origin/$BRANCH\"; }
-                              fi
-                            }
-                            
-                            clone_or_update \"$API_REPO\" \"$API_DIR\"
-                            clone_or_update \"$FRONTEND_REPO\" \"$FRONTEND_DIR\"
-                            
-                            echo ''
-                            echo '=== Repo status ==='
-                            for repo in \"$API_DIR\" \"$FRONTEND_DIR\"; do
-                              if [ -d \"$repo/.git\" ]; then
-                                cd \"$repo\"
-                                echo \"[$repo]\"
-                                echo '  Branch:' $(git branch --show-current)
-                                echo '  Commit:' $(git log -1 --oneline)
-                              fi
-                            done
-                        '"
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH=${BRANCH_NAME:-main} GITHUB_PAT=${GITHUB_PAT} API_REPO=${API_REPO_URL} FRONTEND_REPO=${FRONTEND_REPO_URL} API_DIR=${API_DIR} FRONTEND_DIR=${FRONTEND_DIR} bash -lc 'cat <<\"SCRIPT\" | bash
+set -e
+
+sanitize_url() {
+  local input=\"$1\"
+  echo \"$input\" | sed -E \"s|^git@github.com:|github.com/|; s|^https://github.com/|github.com/|; s|^http://github.com/|github.com/|\"
+}
+
+clone_or_update() {
+  local url=\"$1\"; local dir=\"$2\"
+  local clean=\"$(sanitize_url \"$url\")\"
+  if [ ! -d \"$dir/.git\" ]; then
+    echo \"Cloning $clean to $dir (branch: $BRANCH) ...\"
+    git clone -b \"$BRANCH\" \"https://$GITHUB_PAT@$clean\" \"$dir\"
+  else
+    echo \"Updating $dir (branch: $BRANCH) ...\"
+    cd \"$dir\"
+    git config --global --add safe.directory \"$dir\"
+    git checkout \"$BRANCH\" || git checkout -b \"$BRANCH\" \"origin/$BRANCH\"
+    git pull \"https://$GITHUB_PAT@$clean\" \"$BRANCH\" || { git fetch --all; git reset --hard \"origin/$BRANCH\"; }
+  fi
+}
+
+clone_or_update \"$API_REPO\" \"$API_DIR\"
+clone_or_update \"$FRONTEND_REPO\" \"$FRONTEND_DIR\"
+
+echo ''
+echo '=== Repo status ==='
+for repo in \"$API_DIR\" \"$FRONTEND_DIR\"; do
+  if [ -d \"$repo/.git\" ]; then
+    cd \"$repo\"
+    echo \"[$repo]\"
+    echo '  Branch:' $(git branch --show-current)
+    echo '  Commit:' $(git log -1 --oneline)
+  fi
+done
+SCRIPT'"
                     '''
                 }
             }
