@@ -72,7 +72,7 @@ metadata:
   name: ingress-nginx-controller
   namespace: ingress-nginx
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
     app: ingress-nginx
   ports:
