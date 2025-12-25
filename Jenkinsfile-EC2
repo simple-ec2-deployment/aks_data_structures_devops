@@ -212,51 +212,53 @@ SCRIPT
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
-                            # Fix permissions from earlier sudo/root runs
-                            sudo mkdir -p /home/${EC2_USER}/.minikube /home/${EC2_USER}/.kube
-                            sudo chown -R ${EC2_USER}:${EC2_USER} /home/${EC2_USER}/.minikube /home/${EC2_USER}/.kube
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "EC2_USER='${EC2_USER}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+set -euo pipefail
 
-                            # Ensure docker is usable by the ubuntu user in this non-interactive session
-                            if ! groups ${EC2_USER} | grep -q '\\bdocker\\b'; then
-                              echo 'Adding user to docker group...'
-                              sudo usermod -aG docker ${EC2_USER}
-                            fi
-                            sudo systemctl start docker >/dev/null 2>&1 || true
-                            sudo systemctl enable docker >/dev/null 2>&1 || true
-                            sudo systemctl restart docker >/dev/null 2>&1 || true
-                            sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
+# Fix permissions from earlier sudo/root runs
+sudo mkdir -p "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
+sudo chown -R "${EC2_USER}:${EC2_USER}" "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
 
-                            echo 'Docker socket check:'
-                            sg docker -c 'docker version' || {
-                              echo 'Failed to access docker socket even after docker group fixes.'
-                              exit 1
-                            }
+# Ensure docker is usable (group + socket)
+if ! id -nG "${EC2_USER}" | tr ' ' '\n' | grep -qx docker; then
+  echo 'Adding user to docker group...'
+  sudo usermod -aG docker "${EC2_USER}"
+fi
+sudo systemctl enable docker >/dev/null 2>&1 || true
+sudo systemctl restart docker >/dev/null 2>&1 || true
+sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
 
-                            # Check if Minikube is running
-                            if sg docker -c "minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null" | grep -q 'Running'; then
-                                echo '✓ Minikube is already running'
-                            else
-                                echo 'Starting Minikube...'
-                                sg docker -c "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=4096 --cpus=2" || {
-                                    echo 'Failed to start Minikube'
-                                    exit 1
-                                }
-                                echo '✓ Minikube started successfully'
-                            fi
-                            
-                            # Get Minikube IP
-                            MINIKUBE_IP=\\$(sg docker -c "minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null" || echo '')
-                            if [ -n \\"\\$MINIKUBE_IP\\" ]; then
-                                echo \\"Minikube IP: \\$MINIKUBE_IP\\"
-                            fi
-                            
-                            # Verify kubectl access
-                            sg docker -c 'kubectl cluster-info' || {
-                                echo 'ERROR: Cannot access Kubernetes cluster'
-                                exit 1
-                            }
-                        "
+echo 'Docker socket check:'
+sudo -u "${EC2_USER}" -H bash -lc 'docker version' || {
+  echo 'Failed to access docker socket even after docker group fixes.'
+  exit 1
+}
+
+# Check if Minikube is running
+if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running"; then
+  echo '✓ Minikube is already running'
+else
+  echo 'Starting Minikube...'
+  sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=4096 --cpus=2" || {
+    echo 'Failed to start Minikube'
+    exit 1
+  }
+  echo '✓ Minikube started successfully'
+fi
+
+# Get Minikube IP
+MINIKUBE_IP="$(sudo -u "${EC2_USER}" -H bash -lc "minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null" || true)"
+if [ -n "$MINIKUBE_IP" ]; then
+  echo "Minikube IP: $MINIKUBE_IP"
+fi
+
+# Verify kubectl access
+sudo -u "${EC2_USER}" -H bash -lc 'kubectl cluster-info' || {
+  echo 'ERROR: Cannot access Kubernetes cluster'
+  exit 1
+}
+SCRIPT
                     '''
                 }
             }
