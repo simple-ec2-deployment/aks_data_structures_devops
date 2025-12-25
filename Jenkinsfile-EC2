@@ -71,36 +71,49 @@ pipeline {
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        # Test SSH connection
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
                         
                         # Clone or pull repository (force bash, safe default branch)
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "cat <<'SCRIPT' | BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' bash -lc 'set -e; source /dev/stdin'
 set -e
-: \"\${BRANCH:=main}\"
+: "${BRANCH:=main}"
 
-echo \"Repo: \$REPO_URL\"
-echo \"Branch: \$BRANCH\"
+echo "Repo: $REPO_URL"
+echo "Branch: $BRANCH"
 
-if [ ! -d \"\$REPO_DIR/.git\" ]; then
-  mkdir -p \"\$REPO_DIR\"
-  echo \"Cloning repository from branch: \$BRANCH...\"
-  git clone -b \"\$BRANCH\" \"https://\$GITHUB_PAT@\${REPO_URL}\" \"\$REPO_DIR\"
+clean_url=$(echo "$REPO_URL" | sed -E "s|^https?://||; s|^git@github.com:|github.com/|; s|^ssh://git@github.com/|github.com/|")
+FULL_URL="https://${clean_url}"
+
+cat >/tmp/git-askpass.sh <<'EOF'
+#!/bin/sh
+case "$1" in
+  Username*) echo "x-access-token" ;;
+  Password*) echo "$GITHUB_PAT" ;;
+esac
+EOF
+chmod +x /tmp/git-askpass.sh
+export GIT_ASKPASS=/tmp/git-askpass.sh
+export GIT_TERMINAL_PROMPT=0
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR"
+  echo "Cloning repository from branch: $BRANCH..."
+  git clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
 else
-  echo \"Repository exists, pulling latest changes from branch: \$BRANCH...\"
-  cd \"\$REPO_DIR\"
-  git config --global --add safe.directory \"\$REPO_DIR\"
-  git checkout \"\$BRANCH\" || git checkout -b \"\$BRANCH\" \"origin/\$BRANCH\"
-  git pull \"https://\$GITHUB_PAT@\${REPO_URL}\" \"\$BRANCH\" || {
-    echo \"Pull failed, trying to reset...\"
+  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
+  cd "$REPO_DIR"
+  git config --global --add safe.directory "$REPO_DIR"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git pull "$FULL_URL" "$BRANCH" || {
+    echo "Pull failed, trying to reset..."
     git fetch --all
-    git reset --hard \"origin/\$BRANCH\"
+    git reset --hard "origin/$BRANCH"
   }
 fi
 
-cd \"\$REPO_DIR\"
-echo \"Current branch: \$(git branch --show-current)\"
-echo \"Latest commit:  \$(git rev-parse --short HEAD)\"
+cd "$REPO_DIR"
+echo "Current branch: $(git branch --show-current)"
+echo "Latest commit:  $(git rev-parse --short HEAD)"
 SCRIPT"
                     '''
                 }
@@ -119,37 +132,49 @@ SCRIPT"
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "cat <<'SCRIPT' | BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' API_REPO='${API_REPO_URL}' FRONTEND_REPO='${FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -lc 'set -e; source /dev/stdin'
 set -e
-: \"\${BRANCH:=main}\"
+: "${BRANCH:=main}"
+
+cat >/tmp/git-askpass.sh <<'EOF'
+#!/bin/sh
+case "$1" in
+  Username*) echo "x-access-token" ;;
+  Password*) echo "$GITHUB_PAT" ;;
+esac
+EOF
+chmod +x /tmp/git-askpass.sh
+export GIT_ASKPASS=/tmp/git-askpass.sh
+export GIT_TERMINAL_PROMPT=0
 
 sanitize_url() {
-  local input=\"$1\"
-  echo \"$input\" | sed -E \"s|^git@github.com:|github.com/|; s|^https://github.com/|github.com/|; s|^http://github.com/|github.com/|\"
+  local input="$1"
+  echo "$input" | sed -E "s|^git@github.com:|github.com/|; s|^https://github.com/|github.com/|; s|^http://github.com/|github.com/|; s|^ssh://git@github.com/|github.com/|"
 }
 
 clone_or_update() {
-  local url=\"$1\"; local dir=\"$2\"
-  local clean=\"$(sanitize_url \"$url\")\"
-  if [ ! -d \"$dir/.git\" ]; then
-    echo \"Cloning $clean to $dir (branch: $BRANCH) ...\"
-    git clone -b \"$BRANCH\" \"https://$GITHUB_PAT@$clean\" \"$dir\"
+  local url="$1"; local dir="$2"
+  local clean="$(sanitize_url "$url")"
+  local full="https://$clean"
+  if [ ! -d "$dir/.git" ]; then
+    echo "Cloning $clean to $dir (branch: $BRANCH) ..."
+    git clone -b "$BRANCH" "$full" "$dir"
   else
-    echo \"Updating $dir (branch: $BRANCH) ...\"
-    cd \"$dir\"
-    git config --global --add safe.directory \"$dir\"
-    git checkout \"$BRANCH\" || git checkout -b \"$BRANCH\" \"origin/$BRANCH\"
-    git pull \"https://$GITHUB_PAT@$clean\" \"$BRANCH\" || { git fetch --all; git reset --hard \"origin/$BRANCH\"; }
+    echo "Updating $dir (branch: $BRANCH) ..."
+    cd "$dir"
+    git config --global --add safe.directory "$dir"
+    git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+    git pull "$full" "$BRANCH" || { git fetch --all; git reset --hard "origin/$BRANCH"; }
   fi
 }
 
-clone_or_update \"$API_REPO\" \"$API_DIR\"
-clone_or_update \"$FRONTEND_REPO\" \"$FRONTEND_DIR\"
+clone_or_update "$API_REPO" "$API_DIR"
+clone_or_update "$FRONTEND_REPO" "$FRONTEND_DIR"
 
 echo ''
 echo '=== Repo status ==='
-for repo in \"$API_DIR\" \"$FRONTEND_DIR\"; do
-  if [ -d \"$repo/.git\" ]; then
-    cd \"$repo\"
-    echo \"[$repo]\"
+for repo in "$API_DIR" "$FRONTEND_DIR"; do
+  if [ -d "$repo/.git" ]; then
+    cd "$repo"
+    echo "[$repo]"
     echo '  Branch:' $(git branch --show-current)
     echo '  Commit:' $(git log -1 --oneline)
   fi
