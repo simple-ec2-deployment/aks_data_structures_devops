@@ -240,7 +240,7 @@ if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/
   echo '✓ Minikube is already running'
 else
   echo 'Starting Minikube...'
-  sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --cpus=2" || {
+  sudo -u "${EC2_USER}" -H bash -lc "minikube start" || {
     echo 'Failed to start Minikube'
     exit 1
   }
@@ -274,44 +274,42 @@ SCRIPT
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
-                            REPO_DIR='${REPO_DIR}'
-                            API_DIR='${API_DIR}'
-                            FRONTEND_DIR='${FRONTEND_DIR}'
-                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
-                            
-                            # Use infra repo as working dir
-                            cd \\${REPO_DIR}
-                            
-                            # Point Docker to Minikube
-                            eval \\$(minikube -p \\${MINIKUBE_PROFILE} docker-env)
-                            
-                            build_if_exists() {
-                              local tag=\"$1\"; local path=\"$2\"
-                              if [ -f \"$path/Dockerfile\" ]; then
-                                echo \"Building $tag:latest from $path ...\"
-                                docker build -t \"$tag:latest\" \"$path\" || { echo 'ERROR: Failed to build '"$tag"; exit 1; }
-                                echo \"✓ Successfully built $tag:latest\"
-                              else
-                                echo \"WARNING: Dockerfile not found at $path\"
-                              fi
-                            }
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "REPO_DIR='${REPO_DIR}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+set -euo pipefail
 
-                            # Data-structures services (from infra repo)
-                            build_if_exists stack-service \"\\$REPO_DIR/stack\"
-                            build_if_exists linkedlist-service \"\\$REPO_DIR/linkedlist\"
-                            build_if_exists graph-service \"\\$REPO_DIR/graph\"
+# Use infra repo as working dir
+cd "${REPO_DIR}"
 
-                            # API service
-                            build_if_exists backend-service \"\\$API_DIR\"
+# Point Docker to Minikube
+eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
-                            # Frontend service
-                            build_if_exists ui-service \"\\$FRONTEND_DIR\"
-                            
-                            echo ''
-                            echo 'All images built successfully:'
-                            docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
-                        "
+build_if_exists() {
+  local tag="$1"; local path="$2"
+  if [ -f "$path/Dockerfile" ]; then
+    echo "Building $tag:latest from $path ..."
+    docker build -t "$tag:latest" "$path" || { echo "ERROR: Failed to build $tag"; exit 1; }
+    echo "✓ Successfully built $tag:latest"
+  else
+    echo "WARNING: Dockerfile not found at $path"
+  fi
+}
+
+# Data-structures services (from infra repo)
+build_if_exists stack-service "${REPO_DIR}/stack"
+build_if_exists linkedlist-service "${REPO_DIR}/linkedlist"
+build_if_exists graph-service "${REPO_DIR}/graph"
+
+# API service
+build_if_exists backend-service "${API_DIR}"
+
+# Frontend service
+build_if_exists ui-service "${FRONTEND_DIR}"
+
+echo ''
+echo 'All images built successfully:'
+docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
+SCRIPT
                     '''
                 }
             }
