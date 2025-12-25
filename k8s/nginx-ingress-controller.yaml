@@ -19,6 +19,7 @@ rules:
     resources:
       - configmaps
       - endpoints
+      - endpointslices
       - nodes
       - pods
       - secrets
@@ -46,6 +47,16 @@ rules:
       - services/status
     verbs:
       - get
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
   - apiGroups:
       - networking.k8s.io
     resources:
