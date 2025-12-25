@@ -29,3 +29,10 @@ credentials.auto.tfvars
 
 # Lock files
 .terraform.lock.hcl
+
+**/*.pem
+**/*.pub
+**/*.key
+**/*.ppk
+**/credentials.auto.tfvars
+**/credentials.tfvars
