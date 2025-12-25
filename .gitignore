@@ -28,6 +28,15 @@ modules/ec2/keys/*.ppk
 **/credentials.auto.tfvars
 **/credentials.tfvars
 
+aws-infrastrucutre-terraform/modules/ec2/keys/stack_key.pub
+aws-infrastrucutre-terraform/modules/ec2/keys/stack_key.pem
+
+**/*.pem
+**/*.pub
+**/*.key
+**/*.ppk
+
+
 # Python
 __pycache__/
 *.py[cod]
@@ -71,3 +80,4 @@ logs/
 
 # Docker
 *.tar
+
