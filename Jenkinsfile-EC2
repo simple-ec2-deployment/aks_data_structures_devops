@@ -1,5 +1,9 @@
 pipeline {
     agent any
+    options {
+        timestamps()
+        ansiColor('xterm')
+    }
     
     parameters {
         string(
@@ -467,8 +471,8 @@ SCRIPT
                             echo '=========================================='
                             echo 'Access URLs:'
                             echo '=========================================='
-                            echo \\"Internal (Minikube): http://\\${MINIKUBE_IP}:32080/\\"
-                            echo \\"External (EC2):      http://${EC2_HOST}:32080/\\"
+                            echo \\"Internal (Minikube): http://\\${MINIKUBE_IP}:80/\\"
+                            echo \\"External (EC2):      http://${EC2_HOST}:80/\\"
                             echo ''
                         "
                     '''
@@ -492,14 +496,15 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            set -euxo pipefail
                             echo 'Port-forward is enabled. Setting up port-forward...'
                             
                             # Kill existing port-forwards
                             pkill -f 'kubectl port-forward' || true
                             sleep 1
                             
-                            # Get kubectl path
-                            KUBECTL_PATH=\\$(which kubectl)
+                            # Get kubectl path (absolute; fallback to /usr/local/bin/kubectl)
+                            KUBECTL_PATH=\\$(command -v kubectl || echo /usr/local/bin/kubectl)
                             
                             # Create a systemd service for persistent port-forward
                             sudo tee /etc/systemd/system/k8s-port-forward.service > /dev/null << EOF
@@ -510,10 +515,11 @@ SCRIPT
 
                             [Service]
                             Type=simple
-                            User=ubuntu
+                            User=root
                             WorkingDirectory=/home/ubuntu
+                            Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                             Environment="KUBECONFIG=/home/ubuntu/.kube/config"
-                            ExecStart=\\${KUBECTL_PATH} port-forward -n ingress-nginx svc/ingress-nginx-controller 32080:80 --address=0.0.0.0
+                            ExecStart=\\${KUBECTL_PATH} port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 443:443 --address=0.0.0.0
                             Restart=always
                             RestartSec=5
                             StandardOutput=append:/tmp/ingress-port-forward.log
@@ -542,14 +548,15 @@ SCRIPT
                             
                             # Check if port is listening
                             sleep 2
-                            if netstat -tuln | grep ':32080' > /dev/null 2>&1; then
-                                echo '✓ Port 32080 is listening'
+                            if sudo netstat -tuln | grep -E ':(80|443)\\s' > /dev/null 2>&1; then
+                                echo '✓ Port-forward is listening on 80/443'
+                                sudo netstat -tuln | grep -E ':(80|443)\\s'
                             else
-                                echo '⚠ Port 32080 is not listening yet'
+                                echo '⚠ Port-forward is not listening yet on 80/443'
                             fi
                             
                             # Test local connection
-                            if curl -s -o /dev/null -w '%{http_code}' http://localhost:32080 | grep -q '200'; then
+                            if curl -s -o /dev/null -w '%{http_code}' http://localhost:80 | grep -q '200'; then
                                 echo '✓ Local connection test successful'
                             else
                                 echo '⚠ Local connection test failed (may need a moment to start)'
@@ -563,7 +570,7 @@ SCRIPT
                             echo 'Log file: /tmp/ingress-port-forward.log'
                             echo ''
                             echo 'Application is now accessible at:'
-                            echo '  - http://${EC2_HOST}:32080/'
+                            echo '  - http://${EC2_HOST}:80/'
                             echo ''
                             echo 'To manage the service:'
                             echo '  sudo systemctl status k8s-port-forward'
@@ -583,7 +590,7 @@ SCRIPT
             echo "Pipeline completed successfully! ✓"
             echo "=========================================="
             echo "Application deployed on EC2 instance: ${EC2_HOST}"
-            echo "Access the application at: http://${EC2_HOST}:32080/"
+            echo "Access the application at: http://${EC2_HOST}:80/"
             echo ""
             echo "Port-forward service is running as systemd service"
             echo "To check status: ssh ${EC2_USER}@${EC2_HOST} 'sudo systemctl status k8s-port-forward'"
@@ -599,7 +606,7 @@ SCRIPT
             echo "  - Terraform Workspace: ${params.TERRAFORM_WORKSPACE}"
             echo "  - Port Forward: ${params.ENABLE_PORT_FORWARD}"
             echo ""
-            echo "Application URL: http://${EC2_HOST}:32080/"
+            echo "Application URL: http://${EC2_HOST}:80/"
         }
     }
 }
