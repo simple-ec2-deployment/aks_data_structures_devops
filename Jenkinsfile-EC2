@@ -240,7 +240,7 @@ if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/
   echo '✓ Minikube is already running'
 else
   echo 'Starting Minikube...'
-  sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=4096 --cpus=2" || {
+  sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --cpus=2" || {
     echo 'Failed to start Minikube'
     exit 1
   }
