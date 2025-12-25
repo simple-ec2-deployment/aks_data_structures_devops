@@ -40,6 +40,7 @@ pipeline {
     }
     
     environment {
+        BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
         // GitHub credentials (PAT token stored in Jenkins)
         GITHUB_PAT = credentials('github-pat-token')
         
@@ -74,9 +75,10 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
                         
                         # Clone or pull repository (force bash, safe default branch)
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH=${BRANCH_NAME:-main} REPO_DIR=${REPO_DIR} REPO_URL=${REPO_URL} GITHUB_PAT=${GITHUB_PAT} bash -lc 'cat <<\"SCRIPT\" | bash
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "cat <<'SCRIPT' | BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' bash -lc 'set -e; source /dev/stdin'
 set -e
+: \"\${BRANCH:=main}\"
+
 echo \"Repo: \$REPO_URL\"
 echo \"Branch: \$BRANCH\"
 
@@ -97,9 +99,9 @@ else
 fi
 
 cd \"\$REPO_DIR\"
-echo \"Current branch: $(git branch --show-current)\"
-echo \"Latest commit:  $(git rev-parse --short HEAD)\"
-SCRIPT'"
+echo \"Current branch: \$(git branch --show-current)\"
+echo \"Latest commit:  \$(git rev-parse --short HEAD)\"
+SCRIPT"
                     '''
                 }
             }
@@ -115,9 +117,9 @@ SCRIPT'"
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH=${BRANCH_NAME:-main} GITHUB_PAT=${GITHUB_PAT} API_REPO=${API_REPO_URL} FRONTEND_REPO=${FRONTEND_REPO_URL} API_DIR=${API_DIR} FRONTEND_DIR=${FRONTEND_DIR} bash -lc 'cat <<\"SCRIPT\" | bash
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "cat <<'SCRIPT' | BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' API_REPO='${API_REPO_URL}' FRONTEND_REPO='${FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -lc 'set -e; source /dev/stdin'
 set -e
+: \"\${BRANCH:=main}\"
 
 sanitize_url() {
   local input=\"$1\"
@@ -152,7 +154,7 @@ for repo in \"$API_DIR\" \"$FRONTEND_DIR\"; do
     echo '  Commit:' $(git log -1 --oneline)
   fi
 done
-SCRIPT'"
+SCRIPT"
                     '''
                 }
             }
