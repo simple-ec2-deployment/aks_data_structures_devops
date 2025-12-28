@@ -1,5 +1,7 @@
 # --- Stage 1: Build ---
-FROM gcc:latest as builder
+FROM alpine:latest as builder
+
+RUN apk add --no-cache build-base
 
 WORKDIR /src
 

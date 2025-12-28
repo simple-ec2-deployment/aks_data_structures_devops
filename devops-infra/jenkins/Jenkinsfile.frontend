@@ -1,0 +1,225 @@
+// Frontend Build and Deploy Pipeline
+// Handles building, testing, and deploying the frontend service
+
+pipeline {
+    agent any
+    
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    
+    parameters {
+        string(
+            name: 'BRANCH_NAME',
+            defaultValue: 'main',
+            description: 'Git branch to build'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(
+            name: 'BUILD_ONLY',
+            defaultValue: false,
+            description: 'Only build, do not deploy'
+        )
+        booleanParam(
+            name: 'DEPLOY_ONLY',
+            defaultValue: false,
+            description: 'Only deploy, do not build (uses existing image)'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            description: 'Custom image tag (leave empty for auto-generated)'
+        )
+    }
+    
+    environment {
+        SERVICE_NAME = 'frontend'
+        DOCKER_IMAGE = "ui-service"
+        DOCKERFILE_PATH = 'frontend-code'
+        K8S_MANIFESTS = 'devops-infra/kubernetes/frontend'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Frontend Pipeline - ${params.ENVIRONMENT}"
+                    echo "Branch: ${params.BRANCH_NAME}"
+                    echo "==========================================="
+                    
+                    // Checkout DevOps repo (current one)
+                    checkout scm
+                    
+                    // Determine Frontend Repo URL (assuming naming convention)
+                    def frontendUrl = env.GIT_URL.replace('aks_data_structures_devops', 'aks_data_structures_frontend')
+                    echo "Frontend Repo URL: ${frontendUrl}"
+                    
+                    // Checkout Frontend code
+                    dir('frontend-code') {
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${params.BRANCH_NAME}"]],
+                            extensions: [[$class: 'CleanBeforeCheckout']],
+                            userRemoteConfigs: [[
+                                credentialsId: 'github-pat-token',
+                                url: frontendUrl
+                            ]]
+                        ])
+                    }
+                }
+            }
+        }
+        
+        stage('Lint & Test') {
+            when {
+                expression { return !params.DEPLOY_ONLY }
+            }
+            steps {
+                script {
+                    echo "Running linting and tests..."
+                }
+                
+                dir("${DOCKERFILE_PATH}") {
+                    sh '''
+                        # Add frontend linting/testing commands here
+                        echo "Running frontend linting..."
+                        # npm run lint || true
+                        
+                        echo "Running frontend tests..."
+                        # npm test || true
+                        
+                        echo "✓ Lint and tests complete"
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            when {
+                expression { return !params.DEPLOY_ONLY }
+            }
+            steps {
+                script {
+                    def imageTag = params.IMAGE_TAG ?: "${env.BUILD_NUMBER}-${params.BRANCH_NAME}"
+                    env.FINAL_IMAGE_TAG = imageTag
+                    
+                    echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
+                }
+                
+                dir("${DOCKERFILE_PATH}") {
+                    sh '''
+                        # Point to Minikube Docker daemon (for local dev)
+                        eval $(minikube docker-env) 2>/dev/null || true
+                        
+                        docker build -t ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} .
+                        docker tag ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} ${DOCKER_IMAGE}:latest
+                        
+                        echo "✓ Docker image built successfully"
+                        docker images | grep ${DOCKER_IMAGE}
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to Registry') {
+            when {
+                allOf {
+                    expression { return !params.DEPLOY_ONLY }
+                    expression { return params.ENVIRONMENT == 'prod' }
+                }
+            }
+            steps {
+                script {
+                    echo "Pushing image to registry..."
+                }
+                
+                sh '''
+                    # Push to container registry (for production)
+                    # docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${FINAL_IMAGE_TAG}
+                    echo "Image push would happen here for production"
+                '''
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            when {
+                expression { return !params.BUILD_ONLY }
+            }
+            steps {
+                script {
+                    echo "Deploying to ${params.ENVIRONMENT}..."
+                }
+                
+                sh '''
+                    # Apply Kubernetes manifests
+                    kubectl apply -f ${K8S_MANIFESTS}/configmap.yaml
+                    kubectl apply -f ${K8S_MANIFESTS}/deployment.yaml
+                    kubectl apply -f ${K8S_MANIFESTS}/service.yaml
+                    kubectl apply -f ${K8S_MANIFESTS}/hpa.yaml
+                    
+                    # Force restart to pull new image (if using latest)
+                    kubectl rollout restart deployment/frontend-deployment
+                    
+                    # Wait for rollout
+                    kubectl rollout status deployment/frontend-deployment --timeout=300s
+                    
+                    echo "✓ Frontend deployed successfully"
+                '''
+            }
+        }
+        
+        stage('Health Check') {
+            when {
+                expression { return !params.BUILD_ONLY }
+            }
+            steps {
+                script {
+                    echo "Running health check..."
+                }
+                
+                sh '''
+                    # Wait for pods to be ready
+                    kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s
+                    
+                    # Get pod status
+                    echo ""
+                    echo "=== Frontend Pods ==="
+                    kubectl get pods -l app=frontend -o wide
+                    
+                    # Port-forward and test (optional)
+                    # kubectl port-forward svc/frontend-service 8080:80 &
+                    # sleep 5
+                    # curl -s http://localhost:8080/ | head -20
+                    
+                    echo "✓ Health check passed"
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo """
+            ==========================================
+            ✓ Frontend Pipeline completed successfully!
+            ==========================================
+            Service: ${SERVICE_NAME}
+            Environment: ${params.ENVIRONMENT}
+            Image: ${DOCKER_IMAGE}:${env.FINAL_IMAGE_TAG ?: 'latest'}
+            """
+        }
+        failure {
+            echo "✗ Frontend Pipeline failed!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

@@ -1,0 +1,97 @@
+// Data Structures Build and Deploy Pipeline
+// Handles building the core data structure services: stack, linkedlist, and graph
+
+pipeline {
+    agent any
+    
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    
+    parameters {
+        string(
+            name: 'BRANCH_NAME',
+            defaultValue: 'main',
+            description: 'Git branch to build'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(
+            name: 'BUILD_ONLY',
+            defaultValue: false,
+            description: 'Only build, do not deploy'
+        )
+        booleanParam(
+            name: 'DEPLOY_ONLY',
+            defaultValue: false,
+            description: 'Only deploy, do not build'
+        )
+    }
+    
+    environment {
+        DEVOPS_INFRA_DIR = 'devops-infra'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build Data Structures') {
+            when {
+                expression { return !params.DEPLOY_ONLY }
+            }
+            steps {
+                script {
+                    echo "Building Data Structure microservices..."
+                    
+                    // Point to Minikube Docker daemon if available
+                    sh 'eval $(minikube docker-env) 2>/dev/null || true'
+                    
+                    sh """
+                        echo "Building Stack Service..."
+                        docker build -t stack-service:latest stack/
+                        
+                        echo "Building LinkedList Service..."
+                        docker build -t linkedlist-service:latest linkedlist/
+                        
+                        echo "Building Graph Service..."
+                        docker build -t graph-service:latest graph/
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            when {
+                expression { return !params.BUILD_ONLY }
+            }
+            steps {
+                script {
+                    echo "Deploying data structures to ${params.ENVIRONMENT}..."
+                    
+                    sh """
+                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/stack.yaml
+                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/linkedlist.yaml
+                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/graph.yaml
+                        
+                        echo "✓ Data structures deployed successfully"
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

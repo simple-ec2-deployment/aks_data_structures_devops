@@ -1,0 +1,21 @@
+# Backend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  labels:
+    app: backend
+data:
+  # Application Configuration
+  LOG_LEVEL: "INFO"
+  
+  # Data Structure Service URLs
+  STACK_SERVICE_URL: "http://stack-service:5001"
+  LINKEDLIST_SERVICE_URL: "http://linkedlist-service:5002"
+  GRAPH_SERVICE_URL: "http://graph-service:5003"
+  
+  # CORS Configuration
+  CORS_ORIGINS: "*"
+  
+  # Rate Limiting
+  RATE_LIMIT_PER_MINUTE: "100"

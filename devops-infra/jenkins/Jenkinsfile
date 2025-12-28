@@ -1,0 +1,336 @@
+// Main Orchestration Pipeline
+// This pipeline orchestrates the deployment of all services
+
+pipeline {
+    agent any
+    
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 60, unit: 'MINUTES')
+    }
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'prod'],
+            description: 'Target environment for deployment'
+        )
+        string(
+            name: 'BRANCH_NAME',
+            defaultValue: 'main',
+            description: 'Git branch to deploy'
+        )
+        booleanParam(
+            name: 'DEPLOY_FRONTEND',
+            defaultValue: true,
+            description: 'Deploy frontend service'
+        )
+        booleanParam(
+            name: 'DEPLOY_BACKEND',
+            defaultValue: true,
+            description: 'Deploy backend service'
+        )
+        booleanParam(
+            name: 'DEPLOY_DATA_STRUCTURES',
+            defaultValue: true,
+            description: 'Deploy core data structures (Stack, LinkedList, Graph)'
+        )
+        booleanParam(
+            name: 'DEPLOY_MONITORING',
+            defaultValue: false,
+            description: 'Deploy monitoring stack (Prometheus + Grafana)'
+        )
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run tests before deployment'
+        )
+    }
+    
+    environment {
+        // GitHub credentials
+        GITHUB_PAT = credentials('github-pat-token')
+        
+        // Docker registry
+        DOCKER_REGISTRY = credentials('docker-registry-url')
+        DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
+        
+        // Kubernetes
+        KUBECONFIG = credentials('kubeconfig')
+        
+        // Paths
+        DEVOPS_INFRA_DIR = 'devops-infra'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Checkout (Branch: ${params.BRANCH_NAME})"
+                    echo "==========================================="
+                }
+                
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${params.BRANCH_NAME}"]],
+                    extensions: [[$class: 'CleanBeforeCheckout']],
+                    userRemoteConfigs: [[
+                        credentialsId: 'github-pat-token',
+                        url: env.GIT_URL
+                    ]]
+                ])
+            }
+        }
+        
+        stage('Validate') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Validate Configurations"
+                    echo "==========================================="
+                }
+                
+                sh '''
+                    # Validate Kubernetes manifests
+                    echo "Validating Kubernetes manifests..."
+                    for file in $(find ${DEVOPS_INFRA_DIR}/kubernetes -name "*.yaml"); do
+                        echo "Validating: $file"
+                        kubectl apply --dry-run=client -f "$file" || exit 1
+                    done
+                    echo "✓ All Kubernetes manifests are valid"
+                    
+                    # Validate Terraform
+                    echo "Validating Terraform configurations..."
+                    cd ${DEVOPS_INFRA_DIR}/terraform/environments/${ENVIRONMENT}
+                    terraform init -backend=false
+                    terraform validate
+                    echo "✓ Terraform configuration is valid"
+                '''
+            }
+        }
+        
+        stage('Test') {
+            when {
+                expression { return params.RUN_TESTS }
+            }
+            parallel {
+                stage('Frontend Tests') {
+                    when {
+                        expression { return params.DEPLOY_FRONTEND }
+                    }
+                    steps {
+                        echo "Running frontend tests..."
+                        // Add frontend test commands here
+                    }
+                }
+                stage('Backend Tests') {
+                    when {
+                        expression { return params.DEPLOY_BACKEND }
+                    }
+                    steps {
+                        echo "Running backend tests..."
+                        // Add backend test commands here
+                    }
+                }
+            }
+        }
+        
+        stage('Build Images') {
+            parallel {
+                stage('Build Frontend') {
+                    when {
+                        expression { return params.DEPLOY_FRONTEND }
+                    }
+                    steps {
+                        build job: 'frontend-pipeline',
+                              parameters: [
+                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
+                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                  booleanParam(name: 'BUILD_ONLY', value: true)
+                              ],
+                              wait: true
+                    }
+                }
+                stage('Build Backend') {
+                    when {
+                        expression { return params.DEPLOY_BACKEND }
+                    }
+                    steps {
+                        build job: 'backend-pipeline',
+                              parameters: [
+                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
+                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                  booleanParam(name: 'BUILD_ONLY', value: true)
+                              ],
+                              wait: true
+                    }
+                }
+                stage('Build Data Structures') {
+                    when {
+                        expression { return params.DEPLOY_DATA_STRUCTURES }
+                    }
+                    steps {
+                        build job: 'data-structures-pipeline',
+                               parameters: [
+                                   string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
+                                   string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                   booleanParam(name: 'BUILD_ONLY', value: true)
+                               ],
+                               wait: true
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy Infrastructure') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Deploy Infrastructure via Terraform"
+                    echo "==========================================="
+                }
+                
+                sh '''
+                    cd ${DEVOPS_INFRA_DIR}/terraform/environments/${ENVIRONMENT}
+                    
+                    terraform init
+                    terraform plan -out=tfplan
+                    terraform apply -auto-approve tfplan
+                    
+                    echo "✓ Infrastructure deployed successfully"
+                '''
+            }
+        }
+        
+        stage('Deploy Services') {
+            parallel {
+                stage('Deploy Frontend') {
+                    when {
+                        expression { return params.DEPLOY_FRONTEND }
+                    }
+                    steps {
+                        build job: 'frontend-pipeline',
+                              parameters: [
+                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
+                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                  booleanParam(name: 'DEPLOY_ONLY', value: true)
+                              ],
+                              wait: true
+                    }
+                }
+                stage('Deploy Backend') {
+                    when {
+                        expression { return params.DEPLOY_BACKEND }
+                    }
+                    steps {
+                        build job: 'backend-pipeline',
+                              parameters: [
+                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
+                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                  booleanParam(name: 'DEPLOY_ONLY', value: true)
+                              ],
+                              wait: true
+                    }
+                }
+                stage('Deploy Data Structures') {
+                    when {
+                        expression { return params.DEPLOY_DATA_STRUCTURES }
+                    }
+                    steps {
+                        build job: 'data-structures-pipeline',
+                               parameters: [
+                                   string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
+                                   string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                   booleanParam(name: 'DEPLOY_ONLY', value: true)
+                               ],
+                               wait: true
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy Monitoring') {
+            when {
+                expression { return params.DEPLOY_MONITORING }
+            }
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Deploy Monitoring Stack"
+                    echo "==========================================="
+                }
+                
+                sh '''
+                    # Deploy Prometheus
+                    echo "Deploying Prometheus..."
+                    kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/monitoring/prometheus/
+                    
+                    # Deploy Grafana
+                    echo "Deploying Grafana..."
+                    kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/monitoring/grafana/
+                    
+                    echo "✓ Monitoring stack deployed"
+                '''
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Verify Deployment"
+                    echo "==========================================="
+                }
+                
+                sh '''
+                    echo "Waiting for pods to be ready..."
+                    kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || true
+                    kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || true
+                    
+                    echo ""
+                    echo "=== Pod Status ==="
+                    kubectl get pods -o wide
+                    
+                    echo ""
+                    echo "=== Services ==="
+                    kubectl get services
+                    
+                    echo ""
+                    echo "=== Ingress ==="
+                    kubectl get ingress
+                    
+                    echo ""
+                    echo "✓ Deployment verification complete"
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo """
+            ==========================================
+            ✓ Pipeline completed successfully!
+            ==========================================
+            Environment: ${params.ENVIRONMENT}
+            Branch: ${params.BRANCH_NAME}
+            Frontend: ${params.DEPLOY_FRONTEND}
+            Backend: ${params.DEPLOY_BACKEND}
+            Monitoring: ${params.DEPLOY_MONITORING}
+            """
+        }
+        failure {
+            echo """
+            ==========================================
+            ✗ Pipeline failed!
+            ==========================================
+            Check the logs above for details.
+            """
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

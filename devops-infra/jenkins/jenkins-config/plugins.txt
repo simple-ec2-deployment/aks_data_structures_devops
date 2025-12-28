@@ -1,0 +1,53 @@
+# Jenkins Plugins List
+# Install these plugins for full pipeline functionality
+
+# Core Pipeline Plugins
+workflow-aggregator:latest
+pipeline-stage-view:latest
+pipeline-graph-view:latest
+
+# Git Integration
+git:latest
+github:latest
+github-branch-source:latest
+
+# Credentials Management
+credentials:latest
+credentials-binding:latest
+ssh-credentials:latest
+
+# Docker Integration
+docker-workflow:latest
+docker-plugin:latest
+
+# Kubernetes Integration
+kubernetes:latest
+kubernetes-cli:latest
+kubernetes-credentials-provider:latest
+
+# Build Tools
+gradle:latest
+nodejs:latest
+
+# Testing & Quality
+junit:latest
+cobertura:latest
+htmlpublisher:latest
+
+# Notifications
+slack:latest
+email-ext:latest
+
+# Utilities
+timestamper:latest
+ansicolor:latest
+rebuild:latest
+build-timeout:latest
+ws-cleanup:latest
+
+# Security
+role-strategy:latest
+
+# Configuration as Code
+configuration-as-code:latest
+job-dsl:latest

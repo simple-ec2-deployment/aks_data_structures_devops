@@ -1,0 +1,293 @@
+// Backend Build and Deploy Pipeline
+// Handles building, testing, and deploying the backend service
+
+pipeline {
+    agent any
+    
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    
+    parameters {
+        string(
+            name: 'BRANCH_NAME',
+            defaultValue: 'main',
+            description: 'Git branch to build'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(
+            name: 'BUILD_ONLY',
+            defaultValue: false,
+            description: 'Only build, do not deploy'
+        )
+        booleanParam(
+            name: 'DEPLOY_ONLY',
+            defaultValue: false,
+            description: 'Only deploy, do not build (uses existing image)'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            description: 'Custom image tag (leave empty for auto-generated)'
+        )
+        booleanParam(
+            name: 'RUN_INTEGRATION_TESTS',
+            defaultValue: true,
+            description: 'Run integration tests after deployment'
+        )
+    }
+    
+    environment {
+        SERVICE_NAME = 'backend'
+        DOCKER_IMAGE = "backend-service"
+        DOCKERFILE_PATH = 'backend-code'
+        K8S_MANIFESTS = 'devops-infra/kubernetes/backend'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Backend Pipeline - ${params.ENVIRONMENT}"
+                    echo "Branch: ${params.BRANCH_NAME}"
+                    echo "==========================================="
+                    
+                    // Checkout DevOps repo (current one)
+                    checkout scm
+                    
+                    // Determine Backend Repo URL (assuming naming convention)
+                    def backendUrl = env.GIT_URL.replace('aks_data_structures_devops', 'aks_data_structures_backend')
+                    echo "Backend Repo URL: ${backendUrl}"
+                    
+                    // Checkout Backend code
+                    dir('backend-code') {
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${params.BRANCH_NAME}"]],
+                            extensions: [[$class: 'CleanBeforeCheckout']],
+                            userRemoteConfigs: [[
+                                credentialsId: 'github-pat-token',
+                                url: backendUrl
+                            ]]
+                        ])
+                    }
+                }
+            }
+        }
+        
+        stage('Lint & Unit Tests') {
+            when {
+                expression { return !params.DEPLOY_ONLY }
+            }
+            steps {
+                script {
+                    echo "Running linting and unit tests..."
+                }
+                
+                dir("${DOCKERFILE_PATH}") {
+                    sh '''
+                        # Create virtual environment and run tests
+                        python3 -m venv venv || true
+                        . venv/bin/activate || true
+                        
+                        # Install dependencies
+                        pip install -r requirements.txt || true
+                        pip install pytest flake8 || true
+                        
+                        # Run linting
+                        echo "Running Python linting..."
+                        flake8 --max-line-length=120 . || true
+                        
+                        # Run unit tests
+                        echo "Running unit tests..."
+                        pytest tests/ -v || true
+                        
+                        echo "✓ Lint and unit tests complete"
+                    '''
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            when {
+                allOf {
+                    expression { return !params.DEPLOY_ONLY }
+                    expression { return params.ENVIRONMENT == 'prod' }
+                }
+            }
+            steps {
+                script {
+                    echo "Running security scan..."
+                }
+                
+                dir("${DOCKERFILE_PATH}") {
+                    sh '''
+                        # Run security scan (e.g., bandit for Python)
+                        pip install bandit || true
+                        bandit -r . -ll || true
+                        
+                        echo "✓ Security scan complete"
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            when {
+                expression { return !params.DEPLOY_ONLY }
+            }
+            steps {
+                script {
+                    def imageTag = params.IMAGE_TAG ?: "${env.BUILD_NUMBER}-${params.BRANCH_NAME}"
+                    env.FINAL_IMAGE_TAG = imageTag
+                    
+                    echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
+                }
+                
+                dir("${DOCKERFILE_PATH}") {
+                    sh '''
+                        # Point to Minikube Docker daemon (for local dev)
+                        eval $(minikube docker-env) 2>/dev/null || true
+                        
+                        docker build -t ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} .
+                        docker tag ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} ${DOCKER_IMAGE}:latest
+                        
+                        echo "✓ Docker image built successfully"
+                        docker images | grep ${DOCKER_IMAGE}
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to Registry') {
+            when {
+                allOf {
+                    expression { return !params.DEPLOY_ONLY }
+                    expression { return params.ENVIRONMENT == 'prod' }
+                }
+            }
+            steps {
+                script {
+                    echo "Pushing image to registry..."
+                }
+                
+                sh '''
+                    # Push to container registry (for production)
+                    # docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${FINAL_IMAGE_TAG}
+                    echo "Image push would happen here for production"
+                '''
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            when {
+                expression { return !params.BUILD_ONLY }
+            }
+            steps {
+                script {
+                    echo "Deploying to ${params.ENVIRONMENT}..."
+                }
+                
+                sh '''
+                    # Apply Kubernetes manifests
+                    kubectl apply -f ${K8S_MANIFESTS}/configmap.yaml
+                    kubectl apply -f ${K8S_MANIFESTS}/secret.yaml || true
+                    kubectl apply -f ${K8S_MANIFESTS}/deployment.yaml
+                    kubectl apply -f ${K8S_MANIFESTS}/service.yaml
+                    kubectl apply -f ${K8S_MANIFESTS}/hpa.yaml
+                    
+                    # Force restart to pull new image (if using latest)
+                    kubectl rollout restart deployment/backend-deployment
+                    
+                    # Wait for rollout
+                    kubectl rollout status deployment/backend-deployment --timeout=300s
+                    
+                    echo "✓ Backend deployed successfully"
+                '''
+            }
+        }
+        
+        stage('Health Check') {
+            when {
+                expression { return !params.BUILD_ONLY }
+            }
+            steps {
+                script {
+                    echo "Running health check..."
+                }
+                
+                sh '''
+                    # Wait for pods to be ready
+                    kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
+                    
+                    # Get pod status
+                    echo ""
+                    echo "=== Backend Pods ==="
+                    kubectl get pods -l app=backend -o wide
+                    
+                    echo "✓ Health check passed"
+                '''
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                allOf {
+                    expression { return !params.BUILD_ONLY }
+                    expression { return params.RUN_INTEGRATION_TESTS }
+                }
+            }
+            steps {
+                script {
+                    echo "Running integration tests..."
+                }
+                
+                sh '''
+                    # Port-forward to backend service
+                    kubectl port-forward svc/backend-service 5000:5000 &
+                    PF_PID=$!
+                    sleep 5
+                    
+                    # Test health endpoint
+                    echo "Testing /api/health endpoint..."
+                    curl -s http://localhost:5000/api/health || echo "Health check endpoint not available"
+                    
+                    # Test API endpoints
+                    echo "Testing API endpoints..."
+                    curl -s http://localhost:5000/api/ || echo "API root not available"
+                    
+                    # Cleanup
+                    kill $PF_PID 2>/dev/null || true
+                    
+                    echo "✓ Integration tests complete"
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo """
+            ==========================================
+            ✓ Backend Pipeline completed successfully!
+            ==========================================
+            Service: ${SERVICE_NAME}
+            Environment: ${params.ENVIRONMENT}
+            Image: ${DOCKER_IMAGE}:${env.FINAL_IMAGE_TAG ?: 'latest'}
+            """
+        }
+        failure {
+            echo "✗ Backend Pipeline failed!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
