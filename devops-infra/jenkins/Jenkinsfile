@@ -135,7 +135,9 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
                         
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${params.INFRA_REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' bash -s" <<'SCRIPT'
+                          "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${params.INFRA_REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
 set -euo pipefail
 : "${BRANCH:=main}"
 
@@ -155,12 +157,9 @@ FULL_URL="$(normalize_url "$REPO_URL")"
 echo "Repo (normalized): $FULL_URL"
 echo "Branch: $BRANCH"
 
-if [ -n "${GITHUB_PASS:-}" ]; then
-  TOKEN="$GITHUB_PASS"
-else
-  TOKEN="$GITHUB_PAT"
-fi
-AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+# Use GITHUB_PAT for authentication
+TOKEN="$GITHUB_PAT"
+AUTH_B64="$(printf '%s' "x-access-token:$TOKEN" | base64 | tr -d '\n')"
 AUTH_HEADER="Authorization: Basic $AUTH_B64"
 
 if [ ! -d "$REPO_DIR/.git" ]; then
@@ -199,7 +198,7 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' API_REPO='${params.API_REPO_URL}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' API_REPO='${params.API_REPO_URL}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 : "${BRANCH:=main}"
 
@@ -215,12 +214,9 @@ normalize_url() {
   echo "$input"
 }
 
-if [ -n "${GITHUB_PASS:-}" ]; then
-  TOKEN="$GITHUB_PASS"
-else
-  TOKEN="$GITHUB_PAT"
-fi
-AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+# Use GITHUB_PAT for authentication
+TOKEN="$GITHUB_PAT"
+AUTH_B64="$(printf '%s' "x-access-token:$TOKEN" | base64 | tr -d '\n')"
 AUTH_HEADER="Authorization: Basic $AUTH_B64"
 
 clone_or_update() {
