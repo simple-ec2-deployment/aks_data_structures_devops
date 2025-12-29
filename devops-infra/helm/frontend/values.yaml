@@ -1,7 +1,10 @@
 # Default values for frontend
 # This is a YAML-formatted file.
 
-replicaCount: 2
+# Environment configuration
+environment: "dev"  # dev, prod
+
+replicaCount: 1
 
 image:
   repository: ui-service
@@ -41,16 +44,16 @@ ingress:
 
 resources:
   limits:
-    cpu: 500m
-    memory: 256Mi
-  requests:
     cpu: 100m
     memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
 
 autoscaling:
   enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  minReplicas: 1
+  maxReplicas: 2
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
 
@@ -66,6 +69,13 @@ config:
   enableAnalytics: false
   appName: "AKS Data Structures"
   theme: "dark"
+  environment: "dev"  # Will be overridden by environment value
+
+# Feature toggles
+features:
+  enableAnalytics: false
+  showEnvironment: true  # Display environment in UI
+  showDatabaseInfo: false  # Feature toggle for database info display
 
 # Probes
 livenessProbe:

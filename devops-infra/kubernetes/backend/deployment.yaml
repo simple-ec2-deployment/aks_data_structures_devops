@@ -22,6 +22,10 @@ spec:
       labels:
         app: backend
         tier: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
       - name: backend
@@ -35,11 +39,11 @@ spec:
             cpu: "100m"
             memory: "128Mi"
           limits:
-            cpu: "500m"
+            cpu: "300m"
             memory: "256Mi"
         livenessProbe:
           httpGet:
-            path: /health
+            path: /health/live
             port: 5000
           initialDelaySeconds: 15
           periodSeconds: 10
@@ -47,7 +51,7 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /health
+            path: /health/ready
             port: 5000
           initialDelaySeconds: 5
           periodSeconds: 5
@@ -55,15 +59,42 @@ spec:
           failureThreshold: 3
         env:
         - name: FLASK_ENV
-          value: "production"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: FLASK_ENV
         - name: PORT
           value: "5000"
         - name: LOG_LEVEL
-          value: "INFO"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: LOG_LEVEL
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: DATABASE_URL
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: SECRET_KEY
         - name: STACK_SERVICE_URL
-          value: "http://stack-service:5001"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: STACK_SERVICE_URL
         - name: LINKEDLIST_SERVICE_URL
-          value: "http://linkedlist-service:5002"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: LINKEDLIST_SERVICE_URL
         - name: GRAPH_SERVICE_URL
-          value: "http://graph-service:5003"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: GRAPH_SERVICE_URL
+        - name: PROMETHEUS_MULTIPROC_DIR
+          value: "/tmp"
 

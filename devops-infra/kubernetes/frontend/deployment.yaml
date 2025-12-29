@@ -35,11 +35,11 @@ spec:
             cpu: "50m"
             memory: "64Mi"
           limits:
-            cpu: "250m"
+            cpu: "100m"
             memory: "128Mi"
         livenessProbe:
           httpGet:
-            path: /
+            path: /health
             port: 80
           initialDelaySeconds: 10
           periodSeconds: 10
@@ -47,7 +47,7 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /
+            path: /health
             port: 80
           initialDelaySeconds: 5
           periodSeconds: 5

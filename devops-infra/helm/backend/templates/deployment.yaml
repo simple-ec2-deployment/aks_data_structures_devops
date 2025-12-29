@@ -44,6 +44,8 @@ spec:
               value: "5000"
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
             - name: STACK_SERVICE_URL
               value: {{ .Values.config.stackServiceUrl | quote }}
             - name: LINKEDLIST_SERVICE_URL
@@ -54,12 +56,26 @@ spec:
               value: {{ .Values.config.corsOrigins | quote }}
             - name: RATE_LIMIT_PER_MINUTE
               value: {{ .Values.config.rateLimitPerMinute | quote }}
-            {{- if .Values.secrets.dbPassword }}
-            - name: DB_PASSWORD
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: "/tmp"
+            # Feature toggles
+            - name: ENABLE_DATABASE
+              value: {{ .Values.features.enableDatabase | quote }}
+            - name: ENABLE_METRICS
+              value: {{ .Values.features.enableMetrics | quote }}
+            - name: SHOW_DATABASE_INFO
+              value: {{ .Values.features.showDatabaseInfo | quote }}
+            {{- if .Values.features.enableDatabase }}
+            - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "backend.fullname" . }}-secrets
-                  key: db-password
+                  key: database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "backend.fullname" . }}-secrets
+                  key: secret-key
             {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:

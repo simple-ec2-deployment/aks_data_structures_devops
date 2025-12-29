@@ -40,12 +40,19 @@ spec:
           env:
             - name: API_URL
               value: {{ .Values.config.apiUrl | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
             - name: ENABLE_ANALYTICS
-              value: {{ .Values.config.enableAnalytics | quote }}
+              value: {{ .Values.features.enableAnalytics | quote }}
             - name: APP_NAME
               value: {{ .Values.config.appName | quote }}
             - name: THEME
               value: {{ .Values.config.theme | quote }}
+            # Feature toggles
+            - name: SHOW_ENVIRONMENT
+              value: {{ .Values.features.showEnvironment | quote }}
+            - name: SHOW_DATABASE_INFO
+              value: {{ .Values.features.showDatabaseInfo | quote }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

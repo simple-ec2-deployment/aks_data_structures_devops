@@ -34,14 +34,17 @@ spec:
           name: http
         resources:
           requests:
-            cpu: "250m"
-            memory: "256Mi"
+            cpu: "100m"
+            memory: "128Mi"
           limits:
-            cpu: "1000m"
-            memory: "512Mi"
+            cpu: "200m"
+            memory: "256Mi"
         volumeMounts:
         - name: prometheus-config
           mountPath: /etc/prometheus
+        - name: prometheus-alerts
+          mountPath: /etc/prometheus/alerts.yml
+          subPath: alerts.yml
         - name: prometheus-storage
           mountPath: /prometheus
         livenessProbe:
@@ -60,5 +63,8 @@ spec:
       - name: prometheus-config
         configMap:
           name: prometheus-config
+      - name: prometheus-alerts
+        configMap:
+          name: prometheus-alerts
       - name: prometheus-storage
         emptyDir: {}
