@@ -72,8 +72,14 @@ pipeline {
                 checkout scm
                 
                 sh '''
+                    set -x  # Enable command tracing
+                    echo "Current user: $(whoami)"
+                    
                     sudo -u ${EC2_USER} -H bash -c "
                         set -euo pipefail
+                        set -x  # Enable command tracing
+                        echo 'Running as user: '\$(whoami)
+                        echo 'User groups: '\$(groups)
                         : \"\${BRANCH:=${BRANCH_NAME}}\"
                         
                         normalize_url() {

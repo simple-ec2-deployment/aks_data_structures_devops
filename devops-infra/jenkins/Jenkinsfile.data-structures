@@ -59,8 +59,14 @@ pipeline {
             }
             steps {
                 sh '''
+                    set -x  # Enable command tracing
+                    echo "Current user: $(whoami)"
+                    
                     sudo -u ${EC2_USER} -H bash -c "
                         set -euo pipefail
+                        set -x  # Enable command tracing
+                        echo 'Running as user: '\$(whoami)
+                        echo 'User groups: '\$(groups)
                         
                         cd \"${REPO_DIR}\"
                         
@@ -105,8 +111,14 @@ pipeline {
             }
             steps {
                 sh '''
+                    set -x  # Enable command tracing
+                    echo "Current user: $(whoami)"
+                    
                     sudo -u ${EC2_USER} -H bash -c "
                         set -euo pipefail
+                        set -x  # Enable command tracing
+                        echo 'Running as user: '\$(whoami)
+                        echo 'User groups: '\$(groups)
                         
                         cd \"${REPO_DIR}\"
                         

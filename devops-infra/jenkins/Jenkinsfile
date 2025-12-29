@@ -84,51 +84,81 @@ pipeline {
                 }
                 
                 sh '''
+                    set -x  # Enable command tracing for better logs
+                    
+                    echo "Current user: $(whoami)"
+                    echo "Jenkins user groups: $(groups)"
+                    
+                    # Try to run as ubuntu user
+                    # If sudo requires password, we'll get a clear error
+                    echo "Attempting to run as ${EC2_USER} user..."
+                    
                     sudo -u ${EC2_USER} -H bash -c "
                         set -euo pipefail
+                        set -x  # Enable command tracing
                         
-                        # Fix permissions from earlier sudo/root runs
-                        sudo mkdir -p \"/home/${EC2_USER}/.minikube\" \"/home/${EC2_USER}/.kube\"
-                        sudo chown -R \"${EC2_USER}:${EC2_USER}\" \"/home/${EC2_USER}/.minikube\" \"/home/${EC2_USER}/.kube\"
+                        echo '=========================================='
+                        echo 'Running as user: '\$(whoami)
+                        echo 'User groups: '\$(groups)
+                        echo '=========================================='
                         
-                        # Ensure docker is usable
-                        if ! id -nG \"${EC2_USER}\" | tr ' ' '\n' | grep -qx docker; then
-                            echo 'Adding user to docker group...'
-                            sudo usermod -aG docker \"${EC2_USER}\"
-                        fi
-                        sudo systemctl enable docker >/dev/null 2>&1 || true
-                        sudo systemctl restart docker >/dev/null 2>&1 || true
-                        sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
+                        # Ensure directories exist (ubuntu user should have permissions)
+                        mkdir -p \"\$HOME/.minikube\" \"\$HOME/.kube\" || true
                         
-                        echo 'Docker socket check:'
-                        docker version || {
-                            echo 'Failed to access docker socket even after docker group fixes.'
+                        # Check Docker access
+                        echo 'Checking Docker access...'
+                        if docker version &>/dev/null; then
+                            echo '✓ Docker is accessible'
+                            docker version --short
+                        else
+                            echo '✗ Docker is not accessible'
+                            echo 'Checking docker group membership...'
+                            groups | grep docker || echo '⚠ User not in docker group'
                             exit 1
-                        }
+                        fi
                         
                         # Check if Minikube is running
+                        echo ''
+                        echo 'Checking Minikube status...'
                         if minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running; then
                             echo '✓ Minikube is already running'
+                            minikube status -p ${MINIKUBE_PROFILE}
                         else
                             echo 'Starting Minikube...'
                             minikube start -p ${MINIKUBE_PROFILE} --driver=docker || {
-                                echo 'Failed to start Minikube'
+                                echo '✗ Failed to start Minikube'
+                                echo 'Minikube logs:'
+                                minikube logs -p ${MINIKUBE_PROFILE} 2>&1 | tail -20 || true
                                 exit 1
                             }
                             echo '✓ Minikube started successfully'
                         fi
                         
                         # Get Minikube IP
-                        MINIKUBE_IP=\$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || true)
+                        echo ''
+                        echo 'Getting Minikube IP...'
+                        MINIKUBE_IP=\$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || echo '')
                         if [ -n \"\$MINIKUBE_IP\" ]; then
-                            echo \"Minikube IP: \$MINIKUBE_IP\"
+                            echo \"✓ Minikube IP: \$MINIKUBE_IP\"
+                        else
+                            echo '⚠ Could not get Minikube IP'
                         fi
                         
                         # Verify kubectl access
+                        echo ''
+                        echo 'Verifying kubectl access...'
                         kubectl cluster-info || {
-                            echo 'ERROR: Cannot access Kubernetes cluster'
+                            echo '✗ ERROR: Cannot access Kubernetes cluster'
+                            echo 'kubectl config:'
+                            kubectl config view || true
                             exit 1
                         }
+                        echo '✓ kubectl is working'
+                        
+                        echo ''
+                        echo '=========================================='
+                        echo '✓ All prerequisites verified!'
+                        echo '=========================================='
                     "
                 '''
             }
