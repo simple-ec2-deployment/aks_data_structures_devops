@@ -232,7 +232,7 @@ SCRIPT
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
                           "EC2_USER='${EC2_USER}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
-set -euo pipefail
+set -uo pipefail
 # Fix permissions from earlier sudo/root runs
 sudo mkdir -p "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
 sudo chown -R "${EC2_USER}:${EC2_USER}" "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
@@ -254,11 +254,11 @@ if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/
   echo '✓ Minikube is already running'
 else
   echo 'Starting Minikube...'
-  sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=2500mb" || {
-    echo 'Failed to start Minikube'
-    exit 1
-  }
-  echo '✓ Minikube started successfully'
+  if ! sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=2500mb"; then
+    echo 'WARNING: minikube start reported a non-zero exit code; will rely on Kubernetes API readiness checks.'
+  else
+    echo '✓ Minikube started successfully'
+  fi
 fi
 # Get Minikube IP
 MINIKUBE_IP="$(sudo -u "${EC2_USER}" -H bash -lc "minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null" || true)"
