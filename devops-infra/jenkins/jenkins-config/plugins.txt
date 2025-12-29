@@ -11,6 +11,9 @@ git:latest
 github:latest
 github-branch-source:latest
 
+github-pullrequest:latest
+ssh-agent:latest
+
 # Credentials Management
 credentials:latest
 credentials-binding:latest
