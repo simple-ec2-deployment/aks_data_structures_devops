@@ -132,12 +132,13 @@ pipeline {
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     script {
+                        def githubPat = GITHUB_PAT
                         def scriptContent = """
 set -euo pipefail
 BRANCH='${BRANCH_NAME}'
 REPO_DIR='${REPO_DIR}'
 REPO_URL='${params.INFRA_REPO_URL}'
-GITHUB_PAT='${GITHUB_PAT}'
+GITHUB_PAT='${githubPat}'
 
 normalize_url() {
   local input="\\$1"
