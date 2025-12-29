@@ -59,9 +59,7 @@ pipeline {
         // Kubernetes
         KUBECONFIG = credentials('kubeconfig')
         
-        // EC2 SSH Configuration (optional - only if deploying to remote EC2)
-        // EC2_HOST = credentials('ec2-host')
-        // EC2_USER = credentials('ec2-user')
+        // Note: Jenkins is running on EC2, so no SSH needed
         
         // Paths
         DEVOPS_INFRA_DIR = 'devops-infra'
@@ -141,54 +139,13 @@ pipeline {
             }
         }
         
-        stage('Build Images') {
-            parallel {
-                stage('Build Frontend') {
-                    when {
-                        expression { return params.DEPLOY_FRONTEND }
-                    }
-                    steps {
-                        build job: 'frontend-pipeline',
-                              parameters: [
-                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
-                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
-                                  booleanParam(name: 'BUILD_ONLY', value: true)
-                              ],
-                              wait: true
-                    }
-                }
-                stage('Build Backend') {
-                    when {
-                        expression { return params.DEPLOY_BACKEND }
-                    }
-                    steps {
-                        build job: 'backend-pipeline',
-                              parameters: [
-                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
-                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
-                                  booleanParam(name: 'BUILD_ONLY', value: true)
-                              ],
-                              wait: true
-                    }
-                }
-                stage('Build Data Structures') {
-                    when {
-                        expression { return params.DEPLOY_DATA_STRUCTURES }
-                    }
-                    steps {
-                        build job: 'data-structures-pipeline',
-                               parameters: [
-                                   string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
-                                   string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
-                                   booleanParam(name: 'BUILD_ONLY', value: true)
-                               ],
-                               wait: true
-                    }
-                }
-            }
-        }
+        // Build Images stage moved to "Build Docker Images on EC2" stage below
         
         stage('Deploy Infrastructure') {
+            when {
+                // Skip Terraform if Kubernetes is already set up (k3s on EC2)
+                expression { return false } // Set to true if you want Terraform deployment
+            }
             steps {
                 script {
                     echo "==========================================="
@@ -208,179 +165,128 @@ pipeline {
             }
         }
         
-        stage('Deploy to EC2') {
+        stage('Clone All Repositories') {
             steps {
                 script {
                     echo "==========================================="
-                    echo "Stage: Deploy to EC2 via SSH"
+                    echo "Stage: Clone All Repositories on EC2"
                     echo "==========================================="
                     
-                    def ec2Host = credentials('ec2-host')
-                    def ec2User = credentials('ec2-user') ?: 'ubuntu'
+                    // Get GitHub organization/user from current repo URL
+                    def currentUrl = env.GIT_URL ?: scm.userRemoteConfigs[0].url
+                    def githubBase = currentUrl.replaceAll(/https?:\/\/([^\/]+)\/.*/, '$1')
+                    def orgOrUser = currentUrl.replaceAll(/https?:\/\/[^\/]+\/([^\/]+)\/.*/, '$1')
                     
-                    withCredentials([
-                        string(credentialsId: 'ec2-host', variable: 'EC2_HOST'),
-                        string(credentialsId: 'ec2-user', variable: 'EC2_USER', defaultValue: 'ubuntu'),
-                        sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
-                    ]) {
-                        sh """
-                            # Set proper permissions for SSH key
-                            chmod 600 \${SSH_KEY}
-                            
-                            # SSH into EC2 and deploy
-                            ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no \${EC2_USER}@\${EC2_HOST} << 'ENDSSH'
-                                set -e
-                                
-                                echo "==========================================="
-                                echo "Deploying on EC2 Instance"
-                                echo "==========================================="
-                                
-                                # Clone or update DevOps repo
-                                if [ -d "aks_data_structures_devops" ]; then
-                                    echo "Updating DevOps repo..."
-                                    cd aks_data_structures_devops
-                                    git fetch origin
-                                    git checkout ${params.BRANCH_NAME}
-                                    git pull origin ${params.BRANCH_NAME}
-                                else
-                                    echo "Cloning DevOps repo..."
-                                    git clone -b ${params.BRANCH_NAME} https://${GITHUB_PAT}@github.com/simple-ec2-deployment/aks_data_structures_devops.git
-                                    cd aks_data_structures_devops
-                                fi
-                                
-                                # Clone or update Frontend repo
-                                if [ -d "../aks_data_structures_frontend" ]; then
-                                    echo "Updating Frontend repo..."
-                                    cd ../aks_data_structures_frontend
-                                    git fetch origin
-                                    git checkout ${params.BRANCH_NAME}
-                                    git pull origin ${params.BRANCH_NAME}
-                                else
-                                    echo "Cloning Frontend repo..."
-                                    cd ..
-                                    git clone -b ${params.BRANCH_NAME} https://${GITHUB_PAT}@github.com/simple-ec2-deployment/aks_data_structures_frontend.git
-                                fi
-                                
-                                # Clone or update Backend repo
-                                if [ -d "aks_data_structures_backend" ]; then
-                                    echo "Updating Backend repo..."
-                                    cd aks_data_structures_backend
-                                    git fetch origin
-                                    git checkout ${params.BRANCH_NAME}
-                                    git pull origin ${params.BRANCH_NAME}
-                                else
-                                    echo "Cloning Backend repo..."
-                                    git clone -b ${params.BRANCH_NAME} https://${GITHUB_PAT}@github.com/simple-ec2-deployment/aks_data_structures_backend.git
-                                fi
-                                
-                                # Build Docker images
-                                echo "Building Docker images..."
-                                
-                                # Build Frontend
-                                cd aks_data_structures_frontend
-                                docker build -t ui-service:latest .
-                                
-                                # Build Backend
-                                cd ../aks_data_structures_backend
-                                docker build -t backend-service:latest .
-                                
-                                # Deploy using deployment script
-                                echo "Deploying to Kubernetes..."
-                                cd ../aks_data_structures_devops
-                                chmod +x devops-infra/scripts/deploy-ec2.sh
-                                ./devops-infra/scripts/deploy-ec2.sh ${params.ENVIRONMENT} ${params.DEPLOY_MONITORING}
-                                
-                                echo ""
-                                echo "==========================================="
-                                echo "Deployment Complete!"
-                                echo "==========================================="
-                                echo ""
-                                echo "Pod Status:"
-                                kubectl get pods
-                                echo ""
-                                echo "Services:"
-                                kubectl get services
-                                echo ""
-                                echo "Ingress:"
-                                kubectl get ingress
-                            ENDSSH
-                        """
+                    // Clone Frontend repo
+                    dir('frontend-code') {
+                        def frontendUrl = "https://${GITHUB_PAT}@${githubBase}/${orgOrUser}/aks_data_structures_frontend.git"
+                        echo "Cloning Frontend repo: ${frontendUrl}"
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${params.BRANCH_NAME}"]],
+                            extensions: [[$class: 'CleanBeforeCheckout']],
+                            userRemoteConfigs: [[
+                                url: frontendUrl
+                            ]]
+                        ])
+                    }
+                    
+                    // Clone Backend repo
+                    dir('backend-code') {
+                        def backendUrl = "https://${GITHUB_PAT}@${githubBase}/${orgOrUser}/aks_data_structures_backend.git"
+                        echo "Cloning Backend repo: ${backendUrl}"
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${params.BRANCH_NAME}"]],
+                            extensions: [[$class: 'CleanBeforeCheckout']],
+                            userRemoteConfigs: [[
+                                url: backendUrl
+                            ]]
+                        ])
                     }
                 }
             }
         }
         
-        stage('Deploy Services') {
-            parallel {
-                stage('Deploy Frontend') {
-                    when {
-                        expression { return params.DEPLOY_FRONTEND }
-                    }
-                    steps {
-                        build job: 'frontend-pipeline',
-                              parameters: [
-                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
-                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
-                                  booleanParam(name: 'DEPLOY_ONLY', value: true)
-                              ],
-                              wait: true
-                    }
+        stage('Build Docker Images on EC2') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Build Docker Images on EC2"
+                    echo "==========================================="
                 }
-                stage('Deploy Backend') {
-                    when {
-                        expression { return params.DEPLOY_BACKEND }
+                
+                parallel {
+                    stage('Build Frontend Image') {
+                        when {
+                            expression { return params.DEPLOY_FRONTEND }
+                        }
+                        steps {
+                            dir('frontend-code') {
+                                sh '''
+                                    echo "Building Frontend Docker image..."
+                                    docker build -t ui-service:latest .
+                                    docker tag ui-service:latest ui-service:build-${BUILD_NUMBER}
+                                    echo "✓ Frontend image built successfully"
+                                    docker images | grep ui-service
+                                '''
+                            }
+                        }
                     }
-                    steps {
-                        build job: 'backend-pipeline',
-                              parameters: [
-                                  string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
-                                  string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
-                                  booleanParam(name: 'DEPLOY_ONLY', value: true)
-                              ],
-                              wait: true
-                    }
-                }
-                stage('Deploy Data Structures') {
-                    when {
-                        expression { return params.DEPLOY_DATA_STRUCTURES }
-                    }
-                    steps {
-                        build job: 'data-structures-pipeline',
-                               parameters: [
-                                   string(name: 'BRANCH_NAME', value: params.BRANCH_NAME),
-                                   string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
-                                   booleanParam(name: 'DEPLOY_ONLY', value: true)
-                               ],
-                               wait: true
+                    
+                    stage('Build Backend Image') {
+                        when {
+                            expression { return params.DEPLOY_BACKEND }
+                        }
+                        steps {
+                            dir('backend-code') {
+                                sh '''
+                                    echo "Building Backend Docker image..."
+                                    docker build -t backend-service:latest .
+                                    docker tag backend-service:latest backend-service:build-${BUILD_NUMBER}
+                                    echo "✓ Backend image built successfully"
+                                    docker images | grep backend-service
+                                '''
+                            }
+                        }
                     }
                 }
             }
         }
         
-        stage('Deploy Monitoring') {
-            when {
-                expression { return params.DEPLOY_MONITORING }
-            }
+        stage('Deploy to Kubernetes on EC2') {
             steps {
                 script {
                     echo "==========================================="
-                    echo "Stage: Deploy Monitoring Stack"
+                    echo "Stage: Deploy to Kubernetes on EC2"
                     echo "==========================================="
                 }
                 
                 sh '''
-                    # Deploy Prometheus
-                    echo "Deploying Prometheus..."
-                    kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/monitoring/prometheus/
+                    # Ensure we're in the workspace directory
+                    cd ${WORKSPACE}
                     
-                    # Deploy Grafana
-                    echo "Deploying Grafana..."
-                    kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/monitoring/grafana/
+                    # Make deployment script executable
+                    chmod +x ${DEVOPS_INFRA_DIR}/scripts/deploy-ec2.sh
                     
-                    echo "✓ Monitoring stack deployed"
+                    # Run deployment script - it will deploy everything on EC2
+                    echo "Running deployment script on EC2..."
+                    ./${DEVOPS_INFRA_DIR}/scripts/deploy-ec2.sh ${ENVIRONMENT} ${DEPLOY_MONITORING}
+                    
+                    echo ""
+                    echo "==========================================="
+                    echo "Deployment Complete on EC2!"
+                    echo "==========================================="
+                    echo ""
+                    echo "Final Status:"
+                    kubectl get pods -o wide
+                    kubectl get services
+                    kubectl get ingress
                 '''
             }
         }
+        
+        // Monitoring is handled by the deployment script in "Deploy to Kubernetes on EC2" stage
         
         stage('Verify Deployment') {
             steps {
