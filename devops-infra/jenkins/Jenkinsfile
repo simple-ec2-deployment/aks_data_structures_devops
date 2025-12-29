@@ -99,105 +99,89 @@ pipeline {
                     echo "Checking prerequisites..."
                     set +e  # Don't exit on error, we'll handle it manually
                     
-                    # Check Docker
+                    # Check Docker installation
                     DOCKER_CMD=$(command -v docker 2>/dev/null || which docker 2>/dev/null || echo "")
                     if [ -z "$DOCKER_CMD" ]; then
                         echo "✗ Docker is not installed"
                         exit 1
                     fi
                     echo "✓ Docker is installed: $DOCKER_CMD"
-                    docker --version || echo "⚠ Docker command found but may not be working"
                     
-                    # Check kubectl
+                    # Check kubectl installation
                     KUBECTL_CMD=$(command -v kubectl 2>/dev/null || which kubectl 2>/dev/null || echo "")
                     if [ -z "$KUBECTL_CMD" ]; then
                         echo "✗ kubectl is not installed"
                         exit 1
                     fi
                     echo "✓ kubectl is installed: $KUBECTL_CMD"
-                    kubectl version --client --short 2>/dev/null || echo "✓ kubectl is available"
                     
-                    # Check Minikube
+                    # Check Minikube installation
                     MINIKUBE_CMD=$(command -v minikube 2>/dev/null || which minikube 2>/dev/null || echo "")
                     if [ -z "$MINIKUBE_CMD" ]; then
                         echo "✗ Minikube is not installed"
                         exit 1
                     fi
                     echo "✓ Minikube is installed: $MINIKUBE_CMD"
-                    minikube version --short 2>/dev/null || echo "✓ Minikube is available"
                     
-                    # Check Docker permissions for Jenkins user
-                    echo "Checking Docker permissions..."
-                    if ! docker ps &> /dev/null; then
-                        echo "⚠ Jenkins user doesn't have Docker permissions"
-                        echo "Attempting to fix Docker permissions..."
-                        # Try to add jenkins user to docker group (requires sudo)
-                        sudo usermod -aG docker jenkins 2>/dev/null || echo "⚠ Could not add jenkins to docker group automatically"
-                        # Try using sudo for docker commands
-                        if sudo docker ps &> /dev/null; then
-                            echo "✓ Docker accessible via sudo"
-                            # Use sudo for minikube operations
-                            MINIKUBE_CMD="sudo minikube"
-                        else
-                            echo "✗ Docker permissions issue. Please run: sudo usermod -aG docker jenkins && sudo systemctl restart jenkins"
-                            exit 1
+                    # First, check if Minikube is already running (might have been started manually)
+                    echo ""
+                    echo "Checking Minikube status..."
+                    MINIKUBE_RUNNING=false
+                    if minikube status 2>/dev/null | grep -q "Running"; then
+                        echo "✓ Minikube is already running"
+                        MINIKUBE_RUNNING=true
+                        # Configure Docker to use Minikube's daemon
+                        echo "Configuring Docker to use Minikube daemon..."
+                        eval $(minikube docker-env 2>/dev/null) || true
+                        # Verify Docker access through Minikube
+                        if docker ps &> /dev/null; then
+                            echo "✓ Docker accessible via Minikube"
                         fi
                     else
-                        echo "✓ Docker permissions OK"
-                        MINIKUBE_CMD="minikube"
-                    fi
-                    
-                    # Check Minikube status
-                    echo "Checking Minikube status..."
-                    if ! $MINIKUBE_CMD status 2>/dev/null | grep -q "Running"; then
-                        echo "Minikube is not running. Starting Minikube..."
-                        # Try starting with docker driver, fallback to other options
-                        $MINIKUBE_CMD start --driver=docker 2>&1 || {
-                            echo "⚠ Docker driver failed, trying with sudo..."
-                            sudo minikube start --driver=docker 2>&1 || {
+                        # Minikube is not running, check Docker permissions
+                        echo "⚠ Minikube is not running"
+                        echo "Checking Docker permissions..."
+                        if docker ps &> /dev/null; then
+                            echo "✓ Docker permissions OK"
+                            echo "Starting Minikube..."
+                            if minikube start --driver=docker 2>&1; then
+                                echo "✓ Minikube started successfully"
+                                MINIKUBE_RUNNING=true
+                                eval $(minikube docker-env 2>/dev/null) || true
+                            else
                                 echo "✗ Failed to start Minikube"
-                                echo "Please ensure:"
-                                echo "1. Jenkins user is in docker group: sudo usermod -aG docker jenkins"
-                                echo "2. Restart Jenkins: sudo systemctl restart jenkins"
-                                echo "3. Or start Minikube manually: sudo minikube start"
+                                echo ""
+                                echo "Fix: SSH into EC2 and run: sudo usermod -aG docker jenkins && sudo systemctl restart jenkins"
                                 exit 1
-                            }
-                            MINIKUBE_CMD="sudo minikube"
-                        }
+                            fi
+                        else
+                            echo "✗ Jenkins user cannot access Docker"
+                            echo ""
+                            echo "Fix: SSH into EC2 and run: sudo usermod -aG docker jenkins && sudo systemctl restart jenkins"
+                            exit 1
+                        fi
                     fi
-                    echo "✓ Minikube is running"
                     
                     # Configure kubectl for Minikube
+                    echo ""
                     echo "Configuring kubectl for Minikube..."
-                    $MINIKUBE_CMD update-context 2>/dev/null || {
-                        echo "Setting up kubectl context..."
-                        $MINIKUBE_CMD update-context || true
-                    }
+                    minikube update-context 2>/dev/null || minikube update-context || true
                     
                     # Verify kubectl access
+                    echo "Verifying kubectl access..."
+                    sleep 2
                     if kubectl get nodes 2>/dev/null; then
                         echo "✓ kubectl is configured and can access cluster"
                         kubectl get nodes
                     else
-                        echo "⚠ kubectl may need configuration, but continuing..."
-                    fi
-                    
-                    # Set Docker to use Minikube's Docker daemon
-                    echo "Configuring Docker to use Minikube daemon..."
-                    if [ "$MINIKUBE_CMD" = "sudo minikube" ]; then
-                        # If using sudo, we need to handle docker-env differently
-                        eval $(sudo minikube docker-env 2>/dev/null) || {
-                            echo "⚠ Could not configure Minikube Docker env, continuing..."
-                        }
-                    else
-                        eval $(minikube docker-env 2>/dev/null) || {
-                            echo "⚠ Could not configure Minikube Docker env, continuing..."
-                        }
+                        echo "⚠ kubectl configuration issue, but continuing..."
                     fi
                     
                     set -e  # Re-enable exit on error
                     echo ""
-                    echo "✓ All prerequisites checked"
+                    echo "==========================================="
+                    echo "✓ All prerequisites checked and ready!"
+                    echo "==========================================="
                 '''
             }
         }
@@ -361,8 +345,7 @@ pipeline {
                         dir('backend-code') {
                             sh '''
                                 # Configure Docker to use Minikube daemon
-                                # Try both regular and sudo minikube
-                                eval $(minikube docker-env 2>/dev/null) || eval $(sudo minikube docker-env 2>/dev/null) || echo "Docker env already configured"
+                                eval $(minikube docker-env 2>/dev/null) || echo "⚠ Docker env already configured or Minikube not accessible"
                                 
                                 echo "Building Backend Docker image..."
                                 docker build -t backend-service:latest .
@@ -390,12 +373,11 @@ pipeline {
                     
                     # Configure Minikube Docker environment
                     echo "Configuring Docker to use Minikube daemon..."
-                    # Try both regular and sudo minikube
-                    eval $(minikube docker-env 2>/dev/null) || eval $(sudo minikube docker-env 2>/dev/null) || echo "⚠ Minikube Docker env already configured"
+                    eval $(minikube docker-env 2>/dev/null) || echo "⚠ Minikube Docker env already configured or not accessible"
                     
                     # Configure kubectl for Minikube
                     echo "Configuring kubectl for Minikube..."
-                    minikube update-context 2>/dev/null || sudo minikube update-context 2>/dev/null || true
+                    minikube update-context 2>/dev/null || echo "⚠ kubectl context may already be configured"
                     
                     # Make deployment script executable
                     chmod +x ${DEVOPS_INFRA_DIR}/scripts/deploy-ec2.sh
