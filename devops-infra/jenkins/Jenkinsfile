@@ -254,7 +254,7 @@ if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/
   echo '✓ Minikube is already running'
 else
   echo 'Starting Minikube...'
-  sudo -u "${EC2_USER}" -H bash -lc "minikube start" || {
+  sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=2500mb" || {
     echo 'Failed to start Minikube'
     exit 1
   }
@@ -265,11 +265,20 @@ MINIKUBE_IP="$(sudo -u "${EC2_USER}" -H bash -lc "minikube ip -p ${MINIKUBE_PROF
 if [ -n "$MINIKUBE_IP" ]; then
   echo "Minikube IP: $MINIKUBE_IP"
 fi
-# Verify kubectl access
-sudo -u "${EC2_USER}" -H bash -lc 'kubectl cluster-info' || {
-  echo 'ERROR: Cannot access Kubernetes cluster'
-  exit 1
-}
+# Verify kubectl access with retries (API server can take time to become ready)
+attempts=0
+max_attempts=10
+until sudo -u "${EC2_USER}" -H bash -lc 'kubectl cluster-info' >/dev/null 2>&1; do
+  attempts=$((attempts + 1))
+  if [ "$attempts" -ge "$max_attempts" ]; then
+    echo 'ERROR: Cannot access Kubernetes cluster after multiple retries'
+    sudo -u "${EC2_USER}" -H bash -lc 'kubectl cluster-info' || true
+    exit 1
+  fi
+  echo "Waiting for Kubernetes cluster to become ready ($attempts/$max_attempts)..."
+  sleep 15
+done
+echo 'Kubernetes cluster is accessible.'
 SCRIPT
                     '''
                 }
