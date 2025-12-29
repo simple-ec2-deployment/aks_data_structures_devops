@@ -1,5 +1,6 @@
 // Main Orchestration Pipeline
 // This pipeline orchestrates the deployment of all services
+// Runs directly on EC2 where Jenkins is installed
 
 pipeline {
     agent any
@@ -11,68 +12,55 @@ pipeline {
     }
     
     parameters {
-        choice(
-            name: 'ENVIRONMENT',
-            choices: ['dev', 'prod'],
-            description: 'Target environment for deployment'
-        )
         string(
             name: 'BRANCH_NAME',
             defaultValue: 'main',
             description: 'Git branch to deploy'
         )
-        booleanParam(
-            name: 'DEPLOY_FRONTEND',
-            defaultValue: true,
-            description: 'Deploy frontend service'
+        string(
+            name: 'INFRA_REPO_URL',
+            defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_devops.git',
+            description: 'Infrastructure repo URL'
         )
-        booleanParam(
-            name: 'DEPLOY_BACKEND',
-            defaultValue: true,
-            description: 'Deploy backend service'
+        string(
+            name: 'API_REPO_URL',
+            defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_backend.git',
+            description: 'Backend API repo URL'
         )
-        booleanParam(
-            name: 'DEPLOY_DATA_STRUCTURES',
-            defaultValue: true,
-            description: 'Deploy core data structures (Stack, LinkedList, Graph)'
+        string(
+            name: 'FRONTEND_REPO_URL',
+            defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_frontend.git',
+            description: 'Frontend UI repo URL'
+        )
+        string(
+            name: 'MINIKUBE_PROFILE',
+            defaultValue: 'minikube',
+            description: 'Minikube profile name'
         )
         booleanParam(
             name: 'DEPLOY_MONITORING',
             defaultValue: false,
             description: 'Deploy monitoring stack (Prometheus + Grafana)'
         )
-        booleanParam(
-            name: 'RUN_TESTS',
-            defaultValue: true,
-            description: 'Run tests before deployment'
-        )
     }
     
     environment {
-        // GitHub credentials (required)
+        BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
         GITHUB_PAT = credentials('github-pat-token')
-        
-        // Docker registry (optional - not needed for local EC2 deployment)
-        // DOCKER_REGISTRY = credentials('docker-registry-url')
-        // DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
-        
-        // Kubernetes (optional - k3s uses default config)
-        // KUBECONFIG = credentials('kubeconfig')
-        
-        // Note: Jenkins is running on EC2, so no SSH needed
-        // Images are built and stored locally on EC2
-        
-        // Paths
-        DEVOPS_INFRA_DIR = 'devops-infra'
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        EC2_USER = 'ubuntu'
+        REPO_DIR = '/home/ubuntu/aks_data_structures_devops'
+        API_DIR = '/home/ubuntu/backend'
+        FRONTEND_DIR = '/home/ubuntu/frontend'
     }
     
     stages {
         stage('Checkout') {
             steps {
                 script {
-                    echo "==========================================="
+                    echo "=========================================="
                     echo "Stage: Checkout (Branch: ${params.BRANCH_NAME})"
-                    echo "==========================================="
+                    echo "=========================================="
                 }
                 
                 checkout([
@@ -81,376 +69,297 @@ pipeline {
                     extensions: [[$class: 'CleanBeforeCheckout']],
                     userRemoteConfigs: [[
                         credentialsId: 'github-pat-token',
-                        url: env.GIT_URL
+                        url: "https://${params.INFRA_REPO_URL}"
                     ]]
                 ])
             }
         }
         
-        stage('Check Prerequisites') {
+        stage('Ensure Minikube is Running') {
             steps {
                 script {
-                    echo "==========================================="
-                    echo "Stage: Check Prerequisites"
-                    echo "==========================================="
+                    echo "=========================================="
+                    echo "Stage: Ensuring Minikube is running"
+                    echo "=========================================="
                 }
                 
                 sh '''
-                    echo "Checking prerequisites..."
-                    set +e  # Don't exit on error, we'll handle it manually
-                    
-                    # Check Docker installation
-                    DOCKER_CMD=$(command -v docker 2>/dev/null || which docker 2>/dev/null || echo "")
-                    if [ -z "$DOCKER_CMD" ]; then
-                        echo "✗ Docker is not installed"
-                        exit 1
-                    fi
-                    echo "✓ Docker is installed: $DOCKER_CMD"
-                    
-                    # Check kubectl installation
-                    KUBECTL_CMD=$(command -v kubectl 2>/dev/null || which kubectl 2>/dev/null || echo "")
-                    if [ -z "$KUBECTL_CMD" ]; then
-                        echo "✗ kubectl is not installed"
-                        exit 1
-                    fi
-                    echo "✓ kubectl is installed: $KUBECTL_CMD"
-                    
-                    # Check Minikube installation
-                    MINIKUBE_CMD=$(command -v minikube 2>/dev/null || which minikube 2>/dev/null || echo "")
-                    if [ -z "$MINIKUBE_CMD" ]; then
-                        echo "✗ Minikube is not installed"
-                        exit 1
-                    fi
-                    echo "✓ Minikube is installed: $MINIKUBE_CMD"
-                    
-                    # First, check if Minikube is already running (might have been started manually)
-                    echo ""
-                    echo "Checking Minikube status..."
-                    MINIKUBE_RUNNING=false
-                    MINIKUBE_STATUS_OUTPUT=$(minikube status 2>&1)
-                    if echo "$MINIKUBE_STATUS_OUTPUT" | grep -q "Running"; then
-                        echo "✓ Minikube is already running"
-                        MINIKUBE_RUNNING=true
-                        # Configure Docker to use Minikube's daemon
-                        echo "Configuring Docker to use Minikube daemon..."
-                        MINIKUBE_DOCKER_ENV=$(minikube docker-env 2>&1)
-                        if [ $? -eq 0 ]; then
-                            eval "$MINIKUBE_DOCKER_ENV"
-                            # Verify Docker access through Minikube
-                            if docker ps &> /dev/null; then
-                                echo "✓ Docker accessible via Minikube"
-                            else
-                                echo "⚠ Docker may not be accessible, but Minikube is running"
-                            fi
-                        else
-                            echo "⚠ Could not configure Minikube Docker env, but continuing..."
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        # Fix permissions from earlier sudo/root runs
+                        sudo mkdir -p \"/home/${EC2_USER}/.minikube\" \"/home/${EC2_USER}/.kube\"
+                        sudo chown -R \"${EC2_USER}:${EC2_USER}\" \"/home/${EC2_USER}/.minikube\" \"/home/${EC2_USER}/.kube\"
+                        
+                        # Ensure docker is usable
+                        if ! id -nG \"${EC2_USER}\" | tr ' ' '\n' | grep -qx docker; then
+                            echo 'Adding user to docker group...'
+                            sudo usermod -aG docker \"${EC2_USER}\"
                         fi
-                    else
-                        # Minikube is not running, check Docker permissions
-                        echo "⚠ Minikube is not running"
-                        echo "Checking Docker permissions..."
-                        # Test Docker access explicitly
-                        if docker ps > /dev/null 2>&1; then
-                            echo "✓ Docker permissions OK"
-                            echo "Starting Minikube..."
-                            if minikube start --driver=docker 2>&1; then
-                                echo "✓ Minikube started successfully"
-                                MINIKUBE_RUNNING=true
-                                eval $(minikube docker-env 2>/dev/null) || true
-                            else
-                                echo "✗ Failed to start Minikube"
-                                echo ""
-                                echo "==========================================="
-                                echo "REQUIRED FIX - Run this on EC2:"
-                                echo "==========================================="
-                                echo "sudo usermod -aG docker jenkins"
-                                echo "sudo systemctl restart jenkins"
-                                echo ""
-                                echo "Wait 10 seconds, then run pipeline again."
-                                echo "==========================================="
-                                exit 1
-                            fi
-                        else
-                            echo "✗ Jenkins user cannot access Docker"
-                            echo ""
-                            echo "==========================================="
-                            echo "REQUIRED FIX - Run this on EC2:"
-                            echo "==========================================="
-                            echo "sudo usermod -aG docker jenkins"
-                            echo "sudo systemctl restart jenkins"
-                            echo ""
-                            echo "Wait 10 seconds, then run pipeline again."
-                            echo "==========================================="
+                        sudo systemctl enable docker >/dev/null 2>&1 || true
+                        sudo systemctl restart docker >/dev/null 2>&1 || true
+                        sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
+                        
+                        echo 'Docker socket check:'
+                        docker version || {
+                            echo 'Failed to access docker socket even after docker group fixes.'
                             exit 1
-                        fi
-                    fi
-                    
-                    # Configure kubectl for Minikube
-                    echo ""
-                    echo "Configuring kubectl for Minikube..."
-                    minikube update-context 2>/dev/null || minikube update-context || true
-                    
-                    # Verify kubectl access
-                    echo "Verifying kubectl access..."
-                    sleep 2
-                    if kubectl get nodes 2>/dev/null; then
-                        echo "✓ kubectl is configured and can access cluster"
-                        kubectl get nodes
-                    else
-                        echo "⚠ kubectl configuration issue, but continuing..."
-                    fi
-                    
-                    set -e  # Re-enable exit on error
-                    echo ""
-                    echo "==========================================="
-                    echo "✓ All prerequisites checked and ready!"
-                    echo "==========================================="
-                '''
-            }
-        }
-        
-        stage('Validate') {
-            steps {
-                script {
-                    echo "==========================================="
-                    echo "Stage: Validate Configurations"
-                    echo "==========================================="
-                }
-                
-                sh '''
-                    # Validate Kubernetes manifests (skip if kubectl not fully configured)
-                    echo "Validating Kubernetes manifests..."
-                    if kubectl get nodes &> /dev/null; then
-                        for file in $(find ${DEVOPS_INFRA_DIR}/kubernetes -name "*.yaml"); do
-                            echo "Validating: $file"
-                            kubectl apply --dry-run=client -f "$file" || {
-                                echo "⚠ Validation warning for $file, but continuing..."
+                        }
+                        
+                        # Check if Minikube is running
+                        if minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running; then
+                            echo '✓ Minikube is already running'
+                        else
+                            echo 'Starting Minikube...'
+                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker || {
+                                echo 'Failed to start Minikube'
+                                exit 1
                             }
+                            echo '✓ Minikube started successfully'
+                        fi
+                        
+                        # Get Minikube IP
+                        MINIKUBE_IP=\$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || true)
+                        if [ -n \"\$MINIKUBE_IP\" ]; then
+                            echo \"Minikube IP: \$MINIKUBE_IP\"
+                        fi
+                        
+                        # Verify kubectl access
+                        kubectl cluster-info || {
+                            echo 'ERROR: Cannot access Kubernetes cluster'
+                            exit 1
+                        }
+                    "
+                '''
+            }
+        }
+        
+        stage('Clone Service Repos') {
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage: Cloning service repositories"
+                    echo "=========================================="
+                }
+                
+                sh '''
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        : \"\${BRANCH:=${BRANCH_NAME}}\"
+                        
+                        normalize_url() {
+                            local input=\"\$1\"
+                            if echo \"\$input\" | grep -qiE '^git@github.com:'; then
+                                input=\$(echo \"\$input\" | sed -E 's|^git@github.com:|https://github.com/|')
+                            elif echo \"\$input\" | grep -qiE '^ssh://git@github.com/'; then
+                                input=\$(echo \"\$input\" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+                            elif ! echo \"\$input\" | grep -qiE '^https?://'; then
+                                input=\"https://\$input\"
+                            fi
+                            echo \"\$input\"
+                        }
+                        
+                        if [ -n \"${GITHUB_PAT_PSW:-}\" ]; then
+                            TOKEN=\"${GITHUB_PAT_PSW}\"
+                        else
+                            TOKEN=\"${GITHUB_PAT}\"
+                        fi
+                        AUTH_B64=\$(printf '%s' \"${GITHUB_PAT_USR:-x-access-token}:\$TOKEN\" | base64 | tr -d '\n')
+                        AUTH_HEADER=\"Authorization: Basic \$AUTH_B64\"
+                        
+                        clone_or_update() {
+                            local url=\"\$1\"; local dir=\"\$2\"
+                            local full=\"\$(normalize_url \"\$url\")\"
+                            if [ ! -d \"\$dir/.git\" ]; then
+                                echo \"Cloning \$full to \$dir (branch: \$BRANCH) ...\"
+                                git -c http.extraHeader=\"\$AUTH_HEADER\" clone -b \"\$BRANCH\" \"\$full\" \"\$dir\"
+                            else
+                                echo \"Updating \$dir (branch: \$BRANCH) ...\"
+                                cd \"\$dir\"
+                                git config --global --add safe.directory \"\$dir\"
+                                git checkout \"\$BRANCH\" || git checkout -b \"\$BRANCH\" \"origin/\$BRANCH\"
+                                git -c http.extraHeader=\"\$AUTH_HEADER\" pull \"\$full\" \"\$BRANCH\" || { git fetch --all; git reset --hard \"origin/\$BRANCH\"; }
+                            fi
+                        }
+                        
+                        clone_or_update \"${API_REPO_URL}\" \"${API_DIR}\"
+                        clone_or_update \"${FRONTEND_REPO_URL}\" \"${FRONTEND_DIR}\"
+                        
+                        echo ''
+                        echo '=== Repo status ==='
+                        for repo in \"${API_DIR}\" \"${FRONTEND_DIR}\"; do
+                            if [ -d \"\$repo/.git\" ]; then
+                                cd \"\$repo\"
+                                echo \"[\$repo]\"
+                                echo '  Branch:' \$(git branch --show-current)
+                                echo '  Commit:' \$(git log -1 --oneline)
+                            fi
                         done
-                        echo "✓ Kubernetes manifests validated"
-                    else
-                        echo "⚠ kubectl not fully configured, skipping manifest validation"
-                        echo "✓ Continuing with deployment..."
-                    fi
+                    "
                 '''
             }
         }
         
-        stage('Test') {
-            when {
-                expression { return params.RUN_TESTS }
-            }
-            parallel {
-                stage('Frontend Tests') {
-                    when {
-                        expression { return params.DEPLOY_FRONTEND }
-                    }
-                    steps {
-                        echo "Running frontend tests..."
-                        // Add frontend test commands here
-                    }
-                }
-                stage('Backend Tests') {
-                    when {
-                        expression { return params.DEPLOY_BACKEND }
-                    }
-                    steps {
-                        echo "Running backend tests..."
-                        // Add backend test commands here
-                    }
-                }
-            }
-        }
-        
-        // Build Images stage moved to "Build Docker Images on EC2" stage below
-        
-        stage('Deploy Infrastructure') {
-            when {
-                // Skip Terraform if Kubernetes is already set up (k3s on EC2)
-                expression { return false } // Set to true if you want Terraform deployment
-            }
+        stage('Build Docker Images') {
             steps {
                 script {
-                    echo "==========================================="
-                    echo "Stage: Deploy Infrastructure via Terraform"
-                    echo "==========================================="
+                    echo "=========================================="
+                    echo "Stage: Building Docker images"
+                    echo "=========================================="
                 }
                 
                 sh '''
-                    cd ${DEVOPS_INFRA_DIR}/terraform/environments/${ENVIRONMENT}
-                    
-                    terraform init
-                    terraform plan -out=tfplan
-                    terraform apply -auto-approve tfplan
-                    
-                    echo "✓ Infrastructure deployed successfully"
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        cd \"${REPO_DIR}\"
+                        
+                        # Point Docker to Minikube
+                        eval \"\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\"
+                        
+                        build_if_exists() {
+                            local tag=\"\$1\"; local path=\"\$2\"
+                            if [ -f \"\$path/Dockerfile\" ]; then
+                                echo \"Building \$tag:latest from \$path ...\"
+                                docker build -t \"\$tag:latest\" \"\$path\" || { echo \"ERROR: Failed to build \$tag\"; exit 1; }
+                                echo \"✓ Successfully built \$tag:latest\"
+                            else
+                                echo \"WARNING: Dockerfile not found at \$path\"
+                            fi
+                        }
+                        
+                        # Data-structures services (from infra repo)
+                        build_if_exists stack-service \"${REPO_DIR}/stack\"
+                        build_if_exists linkedlist-service \"${REPO_DIR}/linkedlist\"
+                        build_if_exists graph-service \"${REPO_DIR}/graph\"
+                        
+                        # API service
+                        build_if_exists backend-service \"${API_DIR}\"
+                        
+                        # Frontend service
+                        build_if_exists ui-service \"${FRONTEND_DIR}\"
+                        
+                        echo ''
+                        echo 'All images built successfully:'
+                        docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
+                    "
                 '''
             }
         }
         
-        stage('Clone All Repositories') {
+        stage('Deploy to Kubernetes') {
             steps {
                 script {
-                    echo "==========================================="
-                    echo "Stage: Clone All Repositories on EC2"
-                    echo "==========================================="
-                    
-                    // Get GitHub organization/user from current repo URL
-                    def currentUrl = env.GIT_URL ?: scm.userRemoteConfigs[0].url
-                    def githubBase = currentUrl.replaceAll(/https?:\/\/([^\/]+)\/.*/, '$1')
-                    def orgOrUser = currentUrl.replaceAll(/https?:\/\/[^\/]+\/([^\/]+)\/.*/, '$1')
-                    
-                    // Clone Frontend repo
-                    dir('frontend-code') {
-                        def frontendUrl = "https://${GITHUB_PAT}@${githubBase}/${orgOrUser}/aks_data_structures_frontend.git"
-                        echo "Cloning Frontend repo: ${frontendUrl}"
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: "*/${params.BRANCH_NAME}"]],
-                            extensions: [[$class: 'CleanBeforeCheckout']],
-                            userRemoteConfigs: [[
-                                url: frontendUrl
-                            ]]
-                        ])
-                    }
-                    
-                    // Clone Backend repo
-                    dir('backend-code') {
-                        def backendUrl = "https://${GITHUB_PAT}@${githubBase}/${orgOrUser}/aks_data_structures_backend.git"
-                        echo "Cloning Backend repo: ${backendUrl}"
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: "*/${params.BRANCH_NAME}"]],
-                            extensions: [[$class: 'CleanBeforeCheckout']],
-                            userRemoteConfigs: [[
-                                url: backendUrl
-                            ]]
-                        ])
-                    }
-                }
-            }
-        }
-        
-        stage('Build Docker Images on EC2') {
-            parallel {
-                stage('Build Frontend Image') {
-                    when {
-                        expression { return params.DEPLOY_FRONTEND }
-                    }
-                    steps {
-                        script {
-                            echo "==========================================="
-                            echo "Building Frontend Docker image on EC2"
-                            echo "==========================================="
-                        }
-                        dir('frontend-code') {
-                            sh '''
-                                echo "Building Frontend Docker image..."
-                                docker build -t ui-service:latest .
-                                docker tag ui-service:latest ui-service:build-${BUILD_NUMBER}
-                                echo "✓ Frontend image built successfully"
-                                docker images | grep ui-service
-                            '''
-                        }
-                    }
-                }
-                
-                stage('Build Backend Image') {
-                    when {
-                        expression { return params.DEPLOY_BACKEND }
-                    }
-                    steps {
-                        script {
-                            echo "==========================================="
-                            echo "Building Backend Docker image on EC2"
-                            echo "==========================================="
-                        }
-                        dir('backend-code') {
-                            sh '''
-                                # Configure Docker to use Minikube daemon
-                                eval $(minikube docker-env 2>/dev/null) || echo "⚠ Docker env already configured or Minikube not accessible"
-                                
-                                echo "Building Backend Docker image..."
-                                docker build -t backend-service:latest .
-                                docker tag backend-service:latest backend-service:build-${BUILD_NUMBER}
-                                echo "✓ Backend image built successfully"
-                                docker images | grep backend-service
-                            '''
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy to Kubernetes on EC2') {
-            steps {
-                script {
-                    echo "==========================================="
-                    echo "Stage: Deploy to Kubernetes on EC2/Minikube"
-                    echo "==========================================="
+                    echo "=========================================="
+                    echo "Stage: Deploying to Kubernetes"
+                    echo "=========================================="
                 }
                 
                 sh '''
-                    # Ensure we're in the workspace directory
-                    cd ${WORKSPACE}
-                    
-                    # Configure Minikube Docker environment
-                    echo "Configuring Docker to use Minikube daemon..."
-                    eval $(minikube docker-env 2>/dev/null) || echo "⚠ Minikube Docker env already configured or not accessible"
-                    
-                    # Configure kubectl for Minikube
-                    echo "Configuring kubectl for Minikube..."
-                    minikube update-context 2>/dev/null || echo "⚠ kubectl context may already be configured"
-                    
-                    # Make deployment script executable
-                    chmod +x ${DEVOPS_INFRA_DIR}/scripts/deploy-ec2.sh
-                    
-                    # Run deployment script - it will deploy everything on EC2/Minikube
-                    echo "Running deployment script on EC2/Minikube..."
-                    ./${DEVOPS_INFRA_DIR}/scripts/deploy-ec2.sh ${ENVIRONMENT} ${DEPLOY_MONITORING}
-                    
-                    echo ""
-                    echo "==========================================="
-                    echo "Deployment Complete on EC2/Minikube!"
-                    echo "==========================================="
-                    echo ""
-                    echo "Final Status:"
-                    kubectl get pods -o wide || minikube kubectl -- get pods -o wide
-                    kubectl get services || minikube kubectl -- get services
-                    kubectl get ingress || minikube kubectl -- get ingress
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        cd \"${REPO_DIR}\"
+                        
+                        # Ensure kubectl context is set to Minikube
+                        kubectl config use-context ${MINIKUBE_PROFILE} || {
+                            echo 'WARNING: Could not set kubectl context, continuing...'
+                        }
+                        
+                        # Make deployment script executable
+                        chmod +x devops-infra/scripts/deploy-ec2.sh
+                        
+                        # Run deployment script
+                        echo 'Running deployment script...'
+                        ./devops-infra/scripts/deploy-ec2.sh dev ${DEPLOY_MONITORING} || {
+                            echo 'ERROR: Deployment script failed'
+                            exit 1
+                        }
+                        
+                        echo '✓ Deployment completed successfully'
+                    "
                 '''
             }
         }
-        
-        // Monitoring is handled by the deployment script in "Deploy to Kubernetes on EC2" stage
         
         stage('Verify Deployment') {
             steps {
                 script {
-                    echo "==========================================="
-                    echo "Stage: Verify Deployment"
-                    echo "==========================================="
+                    echo "=========================================="
+                    echo "Stage: Verifying deployment"
+                    echo "=========================================="
                 }
                 
                 sh '''
-                    echo "Waiting for pods to be ready..."
-                    kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || true
-                    kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || true
-                    
-                    echo ""
-                    echo "=== Pod Status ==="
-                    kubectl get pods -o wide
-                    
-                    echo ""
-                    echo "=== Services ==="
-                    kubectl get services
-                    
-                    echo ""
-                    echo "=== Ingress ==="
-                    kubectl get ingress
-                    
-                    echo ""
-                    echo "✓ Deployment verification complete"
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        echo 'Waiting for pods to be ready...'
+                        MAX_RETRIES=40
+                        RETRY_COUNT=0
+                        
+                        while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
+                            PODS=\$(kubectl get pods --no-headers 2>/dev/null)
+                            
+                            if [ -z \"\$PODS\" ]; then
+                                echo 'No pods found yet, waiting...'
+                                sleep 5
+                                RETRY_COUNT=\$((RETRY_COUNT + 1))
+                                continue
+                            fi
+                            
+                            NOT_READY=\$(echo \"\$PODS\" | grep -v 'Running' | grep -v 'Completed' | wc -l | tr -d ' ')
+                            
+                            if [ \"\$NOT_READY\" -eq 0 ] && [ -n \"\$PODS\" ]; then
+                                echo '✓ All pods are Running!'
+                                break
+                            fi
+                            
+                            if [ \$((RETRY_COUNT % 5)) -eq 0 ]; then
+                                echo \"Still waiting for pods... (attempt \$RETRY_COUNT/\$MAX_RETRIES)\"
+                                kubectl get pods || true
+                            fi
+                            
+                            sleep 3
+                            RETRY_COUNT=\$((RETRY_COUNT + 1))
+                        done
+                        
+                        if [ \$RETRY_COUNT -ge \$MAX_RETRIES ]; then
+                            echo 'WARNING: Timeout waiting for pods. Current status:'
+                            kubectl get pods || true
+                        fi
+                        
+                        echo ''
+                        echo '=========================================='
+                        echo 'Kubernetes Resources Status:'
+                        echo '=========================================='
+                        
+                        echo ''
+                        echo '=== Pods ==='
+                        kubectl get pods -o wide || true
+                        
+                        echo ''
+                        echo '=== Services ==='
+                        kubectl get services || true
+                        
+                        echo ''
+                        echo '=== Deployments ==='
+                        kubectl get deployments || true
+                        
+                        echo ''
+                        echo '=== Ingress ==='
+                        kubectl get ingress || true
+                        
+                        # Get access URLs
+                        MINIKUBE_IP=\$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || echo 'unknown')
+                        
+                        echo ''
+                        echo '=========================================='
+                        echo 'Access URLs:'
+                        echo '=========================================='
+                        echo \"Internal (Minikube): http://\$MINIKUBE_IP:32080/\"
+                        echo ''
+                    "
                 '''
             }
         }
@@ -462,23 +371,17 @@ pipeline {
             ==========================================
             ✓ Pipeline completed successfully!
             ==========================================
-            Environment: ${params.ENVIRONMENT}
             Branch: ${params.BRANCH_NAME}
-            Frontend: ${params.DEPLOY_FRONTEND}
-            Backend: ${params.DEPLOY_BACKEND}
+            Minikube Profile: ${params.MINIKUBE_PROFILE}
             Monitoring: ${params.DEPLOY_MONITORING}
             """
         }
-        failure {
+        always {
             echo """
             ==========================================
-            ✗ Pipeline failed!
+            Pipeline execution completed.
             ==========================================
-            Check the logs above for details.
             """
-        }
-        always {
-            cleanWs()
         }
     }
 }

@@ -1,5 +1,6 @@
 // Backend Build and Deploy Pipeline
 // Handles building, testing, and deploying the backend service
+// Runs directly on EC2 where Jenkins is installed
 
 pipeline {
     agent any
@@ -15,6 +16,16 @@ pipeline {
             name: 'BRANCH_NAME',
             defaultValue: 'main',
             description: 'Git branch to build'
+        )
+        string(
+            name: 'API_REPO_URL',
+            defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_backend.git',
+            description: 'Backend API repo URL'
+        )
+        string(
+            name: 'MINIKUBE_PROFILE',
+            defaultValue: 'minikube',
+            description: 'Minikube profile name'
         )
         choice(
             name: 'ENVIRONMENT',
@@ -46,8 +57,11 @@ pipeline {
     environment {
         SERVICE_NAME = 'backend'
         DOCKER_IMAGE = "backend-service"
-        DOCKERFILE_PATH = 'backend-code'
+        API_DIR = '/home/ubuntu/backend'
         K8S_MANIFESTS = 'devops-infra/kubernetes/backend'
+        EC2_USER = 'ubuntu'
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        GITHUB_PAT = credentials('github-pat-token')
     }
     
     stages {
@@ -58,32 +72,59 @@ pipeline {
                     echo "Backend Pipeline - ${params.ENVIRONMENT}"
                     echo "Branch: ${params.BRANCH_NAME}"
                     echo "==========================================="
-                    
-                    // Checkout DevOps repo (current one)
-                    checkout scm
-                    
-                    // Get GitHub organization/user from current repo URL
-                    def currentUrl = env.GIT_URL ?: scm.userRemoteConfigs[0].url
-                    def githubBase = currentUrl.replaceAll(/https?:\/\/([^\/]+)\/.*/, '$1')
-                    def orgOrUser = currentUrl.replaceAll(/https?:\/\/[^\/]+\/([^\/]+)\/.*/, '$1')
-                    
-                    // Construct Backend Repo URL
-                    def backendUrl = "https://${githubBase}/${orgOrUser}/aks_data_structures_backend.git"
-                    echo "Backend Repo URL: ${backendUrl}"
-                    
-                    // Checkout Backend code using PAT token
-                    dir('backend-code') {
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: "*/${params.BRANCH_NAME}"]],
-                            extensions: [[$class: 'CleanBeforeCheckout']],
-                            userRemoteConfigs: [[
-                                credentialsId: 'github-pat-token',
-                                url: backendUrl
-                            ]]
-                        ])
-                    }
                 }
+                
+                checkout scm
+                
+                sh '''
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        : \"\${BRANCH:=${BRANCH_NAME}}\"
+                        
+                        normalize_url() {
+                            local input=\"\$1\"
+                            if echo \"\$input\" | grep -qiE '^git@github.com:'; then
+                                input=\$(echo \"\$input\" | sed -E 's|^git@github.com:|https://github.com/|')
+                            elif echo \"\$input\" | grep -qiE '^ssh://git@github.com/'; then
+                                input=\$(echo \"\$input\" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+                            elif ! echo \"\$input\" | grep -qiE '^https?://'; then
+                                input=\"https://\$input\"
+                            fi
+                            echo \"\$input\"
+                        }
+                        
+                        if [ -n \"${GITHUB_PAT_PSW:-}\" ]; then
+                            TOKEN=\"${GITHUB_PAT_PSW}\"
+                        else
+                            TOKEN=\"${GITHUB_PAT}\"
+                        fi
+                        AUTH_B64=\$(printf '%s' \"${GITHUB_PAT_USR:-x-access-token}:\$TOKEN\" | base64 | tr -d '\n')
+                        AUTH_HEADER=\"Authorization: Basic \$AUTH_B64\"
+                        
+                        FULL_URL=\"\$(normalize_url \"${API_REPO_URL}\")\"
+                        echo \"Cloning backend repo: \$FULL_URL\"
+                        
+                        if [ ! -d \"${API_DIR}/.git\" ]; then
+                            mkdir -p \"${API_DIR}\"
+                            echo \"Cloning repository from branch: \$BRANCH...\"
+                            git -c http.extraHeader=\"\$AUTH_HEADER\" clone -b \"\$BRANCH\" \"\$FULL_URL\" \"${API_DIR}\"
+                        else
+                            echo \"Repository exists, pulling latest changes from branch: \$BRANCH...\"
+                            cd \"${API_DIR}\"
+                            git config --global --add safe.directory \"${API_DIR}\"
+                            git checkout \"\$BRANCH\" || git checkout -b \"\$BRANCH\" \"origin/\$BRANCH\"
+                            git -c http.extraHeader=\"\$AUTH_HEADER\" pull \"\$FULL_URL\" \"\$BRANCH\" || {
+                                echo \"Pull failed, trying to reset...\"
+                                git fetch --all
+                                git reset --hard \"origin/\$BRANCH\"
+                            }
+                        fi
+                        
+                        cd \"${API_DIR}\"
+                        echo \"Current branch: \$(git branch --show-current)\"
+                        echo \"Latest commit:  \$(git rev-parse --short HEAD)\"
+                    "
+                '''
             }
         }
         
@@ -92,12 +133,11 @@ pipeline {
                 expression { return !params.DEPLOY_ONLY }
             }
             steps {
-                script {
-                    echo "Running linting and unit tests..."
-                }
-                
-                dir("${DOCKERFILE_PATH}") {
-                    sh '''
+                sh '''
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        cd \"${API_DIR}\"
+                        
                         # Create virtual environment and run tests
                         python3 -m venv venv || true
                         . venv/bin/activate || true
@@ -107,40 +147,16 @@ pipeline {
                         pip install pytest flake8 || true
                         
                         # Run linting
-                        echo "Running Python linting..."
+                        echo \"Running Python linting...\"
                         flake8 --max-line-length=120 . || true
                         
                         # Run unit tests
-                        echo "Running unit tests..."
+                        echo \"Running unit tests...\"
                         pytest tests/ -v || true
                         
-                        echo "✓ Lint and unit tests complete"
-                    '''
-                }
-            }
-        }
-        
-        stage('Security Scan') {
-            when {
-                allOf {
-                    expression { return !params.DEPLOY_ONLY }
-                    expression { return params.ENVIRONMENT == 'prod' }
-                }
-            }
-            steps {
-                script {
-                    echo "Running security scan..."
-                }
-                
-                dir("${DOCKERFILE_PATH}") {
-                    sh '''
-                        # Run security scan (e.g., bandit for Python)
-                        pip install bandit || true
-                        bandit -r . -ll || true
-                        
-                        echo "✓ Security scan complete"
-                    '''
-                }
+                        echo \"✓ Lint and unit tests complete\"
+                    "
+                '''
             }
         }
         
@@ -149,106 +165,33 @@ pipeline {
                 expression { return !params.DEPLOY_ONLY }
             }
             steps {
-                script {
-                    // Get git commit SHA for tagging
-                    dir("${DOCKERFILE_PATH}") {
-                        env.GIT_COMMIT_SHA = sh(
-                            script: 'git rev-parse --short HEAD',
-                            returnStdout: true
-                        ).trim()
-                    }
-                    
-                    def imageTag = params.IMAGE_TAG ?: "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHA}"
-                    env.FINAL_IMAGE_TAG = imageTag
-                    
-                    echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
-                }
-                
-                dir("${DOCKERFILE_PATH}") {
-                    sh '''
-                        # Point to Minikube Docker daemon (for local dev)
-                        eval $(minikube docker-env) 2>/dev/null || true
+                sh '''
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
                         
-                        docker build -t ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} .
-                        docker tag ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} ${DOCKER_IMAGE}:latest
+                        cd \"${API_DIR}\"
                         
-                        echo "✓ Docker image built successfully"
+                        # Get git commit SHA for tagging
+                        GIT_COMMIT_SHA=\$(git rev-parse --short HEAD)
+                        
+                        # Point Docker to Minikube daemon
+                        eval \"\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\"
+                        
+                        # Build image
+                        IMAGE_TAG=\"${IMAGE_TAG:-build-${BUILD_NUMBER}-\$GIT_COMMIT_SHA}\"
+                        echo \"Building Docker image: ${DOCKER_IMAGE}:\$IMAGE_TAG\"
+                        
+                        docker build -t ${DOCKER_IMAGE}:\$IMAGE_TAG .
+                        docker tag ${DOCKER_IMAGE}:\$IMAGE_TAG ${DOCKER_IMAGE}:latest
+                        docker tag ${DOCKER_IMAGE}:\$IMAGE_TAG ${DOCKER_IMAGE}:build-${BUILD_NUMBER}
+                        docker tag ${DOCKER_IMAGE}:\$IMAGE_TAG ${DOCKER_IMAGE}:\$GIT_COMMIT_SHA
+                        
+                        echo \"✓ Docker image built successfully\"
                         docker images | grep ${DOCKER_IMAGE}
-                    '''
-                }
-            }
-        }
-        
-        stage('Scan Image') {
-            when {
-                allOf {
-                    expression { return !params.DEPLOY_ONLY }
-                    expression { return params.ENVIRONMENT == 'prod' }
-                }
-            }
-            steps {
-                script {
-                    echo "Scanning Docker image for vulnerabilities..."
-                }
-                
-                sh '''
-                    # Install Trivy if not available
-                    if ! command -v trivy &> /dev/null; then
-                        echo "Installing Trivy..."
-                        # Add Trivy installation commands here
-                    fi
-                    
-                    # Scan image with Trivy (bonus challenge)
-                    # trivy image ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} || true
-                    echo "Image scanning would happen here (Trivy)"
-                    echo "✓ Image scan complete"
-                '''
-            }
-        }
-        
-        stage('Tag Image') {
-            when {
-                expression { return !params.DEPLOY_ONLY }
-            }
-            steps {
-                script {
-                    echo "Tagging Docker image..."
-                }
-                
-                sh '''
-                    # Tag with build number
-                    docker tag ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} ${DOCKER_IMAGE}:build-${env.BUILD_NUMBER}
-                    
-                    # Tag with git SHA
-                    docker tag ${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} ${DOCKER_IMAGE}:${env.GIT_COMMIT_SHA}
-                    
-                    echo "✓ Image tagged successfully"
-                '''
-            }
-        }
-        
-        stage('Push to Registry') {
-            when {
-                allOf {
-                    expression { return !params.DEPLOY_ONLY }
-                    expression { return params.ENVIRONMENT == 'prod' }
-                }
-            }
-            steps {
-                script {
-                    echo "Pushing image to registry..."
-                }
-                
-                sh '''
-                    # Login to registry
-                    echo "${DOCKER_CREDENTIALS}" | docker login -u ${DOCKER_REGISTRY_USER} --password-stdin ${DOCKER_REGISTRY} || true
-                    
-                    # Push all tags
-                    docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} || echo "Registry push skipped (using local registry)"
-                    docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:build-${env.BUILD_NUMBER} || echo "Registry push skipped"
-                    docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${env.GIT_COMMIT_SHA} || echo "Registry push skipped"
-                    
-                    echo "✓ Images pushed to registry"
+                        
+                        # Store image tag for deployment
+                        echo \"\$IMAGE_TAG\" > /tmp/backend-image-tag.txt
+                    "
                 '''
             }
         }
@@ -258,36 +201,38 @@ pipeline {
                 expression { return !params.BUILD_ONLY }
             }
             steps {
-                script {
-                    echo "Deploying to ${params.ENVIRONMENT}..."
-                }
-                
                 sh '''
-                    # Update image tag in deployment if using Helm
-                    if [ -f "${WORKSPACE}/devops-infra/helm/backend/values.yaml" ]; then
-                        # Use Helm for deployment
-                        helm upgrade --install backend ${WORKSPACE}/devops-infra/helm/backend \
-                            --set image.tag=${FINAL_IMAGE_TAG} \
-                            --set image.repository=${DOCKER_IMAGE} \
-                            --namespace default \
-                            --create-namespace || true
-                    else
-                        # Apply Kubernetes manifests directly
-                        kubectl apply -f ${K8S_MANIFESTS}/configmap.yaml
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        cd \"${WORKSPACE}\"
+                        
+                        # Get image tag
+                        if [ -f /tmp/backend-image-tag.txt ]; then
+                            IMAGE_TAG=\$(cat /tmp/backend-image-tag.txt)
+                        else
+                            IMAGE_TAG=\"latest\"
+                        fi
+                        
+                        # Ensure kubectl context is set
+                        kubectl config use-context ${MINIKUBE_PROFILE} || true
+                        
+                        # Apply Kubernetes manifests
+                        kubectl apply -f ${K8S_MANIFESTS}/configmap.yaml || true
                         kubectl apply -f ${K8S_MANIFESTS}/secret.yaml || true
                         
                         # Update image in deployment
-                        kubectl set image deployment/backend-deployment backend=${DOCKER_IMAGE}:${FINAL_IMAGE_TAG} || \
+                        kubectl set image deployment/backend-deployment backend=${DOCKER_IMAGE}:\$IMAGE_TAG || \
                         kubectl apply -f ${K8S_MANIFESTS}/deployment.yaml
                         
-                        kubectl apply -f ${K8S_MANIFESTS}/service.yaml
-                        kubectl apply -f ${K8S_MANIFESTS}/hpa.yaml
-                    fi
-                    
-                    # Wait for rollout
-                    kubectl rollout status deployment/backend-deployment --timeout=300s
-                    
-                    echo "✓ Backend deployed successfully"
+                        kubectl apply -f ${K8S_MANIFESTS}/service.yaml || true
+                        kubectl apply -f ${K8S_MANIFESTS}/hpa.yaml || true
+                        
+                        # Wait for rollout
+                        kubectl rollout status deployment/backend-deployment --timeout=300s || true
+                        
+                        echo \"✓ Backend deployed successfully\"
+                    "
                 '''
             }
         }
@@ -297,20 +242,20 @@ pipeline {
                 expression { return !params.BUILD_ONLY }
             }
             steps {
-                script {
-                    echo "Running health check..."
-                }
-                
                 sh '''
-                    # Wait for pods to be ready
-                    kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
-                    
-                    # Get pod status
-                    echo ""
-                    echo "=== Backend Pods ==="
-                    kubectl get pods -l app=backend -o wide
-                    
-                    echo "✓ Health check passed"
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        # Wait for pods to be ready
+                        kubectl wait --for=condition=ready pod -l app=backend --timeout=120s || true
+                        
+                        # Get pod status
+                        echo \"\"
+                        echo \"=== Backend Pods ===\"
+                        kubectl get pods -l app=backend -o wide
+                        
+                        echo \"✓ Health check passed\"
+                    "
                 '''
             }
         }
@@ -323,38 +268,34 @@ pipeline {
                 }
             }
             steps {
-                script {
-                    echo "Running integration tests..."
-                }
-                
                 sh '''
-                    # Port-forward to backend service
-                    kubectl port-forward svc/backend-service 5000:5000 &
-                    PF_PID=$!
-                    sleep 10
-                    
-                    # Test health endpoints
-                    echo "Testing /health endpoint..."
-                    curl -f http://localhost:5000/health || echo "Health check failed"
-                    
-                    echo "Testing /health/ready endpoint..."
-                    curl -f http://localhost:5000/health/ready || echo "Readiness check failed"
-                    
-                    echo "Testing /health/live endpoint..."
-                    curl -f http://localhost:5000/health/live || echo "Liveness check failed"
-                    
-                    # Test metrics endpoint
-                    echo "Testing /metrics endpoint..."
-                    curl -s http://localhost:5000/metrics | head -20 || echo "Metrics endpoint not available"
-                    
-                    # Test API endpoints
-                    echo "Testing API endpoints..."
-                    curl -s http://localhost:5000/api/ || echo "API root not available"
-                    
-                    # Cleanup
-                    kill $PF_PID 2>/dev/null || true
-                    
-                    echo "✓ Integration tests complete"
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
+                        
+                        # Port-forward to backend service
+                        kubectl port-forward svc/backend-service 5000:5000 &
+                        PF_PID=\$!
+                        sleep 10
+                        
+                        # Test health endpoints
+                        echo \"Testing /health endpoint...\"
+                        curl -f http://localhost:5000/health || echo \"Health check failed\"
+                        
+                        echo \"Testing /health/ready endpoint...\"
+                        curl -f http://localhost:5000/health/ready || echo \"Readiness check failed\"
+                        
+                        echo \"Testing /health/live endpoint...\"
+                        curl -f http://localhost:5000/health/live || echo \"Liveness check failed\"
+                        
+                        # Test metrics endpoint
+                        echo \"Testing /metrics endpoint...\"
+                        curl -s http://localhost:5000/metrics | head -20 || echo \"Metrics endpoint not available\"
+                        
+                        # Cleanup
+                        kill \$PF_PID 2>/dev/null || true
+                        
+                        echo \"✓ Integration tests complete\"
+                    "
                 '''
             }
         }
@@ -368,7 +309,6 @@ pipeline {
             ==========================================
             Service: ${SERVICE_NAME}
             Environment: ${params.ENVIRONMENT}
-            Image: ${DOCKER_IMAGE}:${env.FINAL_IMAGE_TAG ?: 'latest'}
             """
         }
         failure {

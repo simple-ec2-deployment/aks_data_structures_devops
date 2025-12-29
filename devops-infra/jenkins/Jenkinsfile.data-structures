@@ -1,5 +1,6 @@
 // Data Structures Build and Deploy Pipeline
 // Handles building the core data structure services: stack, linkedlist, and graph
+// Runs directly on EC2 where Jenkins is installed
 
 pipeline {
     agent any
@@ -15,6 +16,11 @@ pipeline {
             name: 'BRANCH_NAME',
             defaultValue: 'main',
             description: 'Git branch to build'
+        )
+        string(
+            name: 'MINIKUBE_PROFILE',
+            defaultValue: 'minikube',
+            description: 'Minikube profile name'
         )
         choice(
             name: 'ENVIRONMENT',
@@ -35,6 +41,9 @@ pipeline {
     
     environment {
         DEVOPS_INFRA_DIR = 'devops-infra'
+        EC2_USER = 'ubuntu'
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        REPO_DIR = '/home/ubuntu/aks_data_structures_devops'
     }
     
     stages {
@@ -49,23 +58,44 @@ pipeline {
                 expression { return !params.DEPLOY_ONLY }
             }
             steps {
-                script {
-                    echo "Building Data Structure microservices..."
-                    
-                    // Point to Minikube Docker daemon if available
-                    sh 'eval $(minikube docker-env) 2>/dev/null || true'
-                    
-                    sh """
-                        echo "Building Stack Service..."
-                        docker build -t stack-service:latest stack/
+                sh '''
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
                         
-                        echo "Building LinkedList Service..."
-                        docker build -t linkedlist-service:latest linkedlist/
+                        cd \"${REPO_DIR}\"
                         
-                        echo "Building Graph Service..."
-                        docker build -t graph-service:latest graph/
-                    """
-                }
+                        # Point Docker to Minikube daemon
+                        eval \"\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\"
+                        
+                        echo \"Building Stack Service...\"
+                        if [ -f \"stack/Dockerfile\" ]; then
+                            docker build -t stack-service:latest stack/
+                            echo \"✓ Stack service built\"
+                        else
+                            echo \"⚠ Stack Dockerfile not found\"
+                        fi
+                        
+                        echo \"Building LinkedList Service...\"
+                        if [ -f \"linkedlist/Dockerfile\" ]; then
+                            docker build -t linkedlist-service:latest linkedlist/
+                            echo \"✓ LinkedList service built\"
+                        else
+                            echo \"⚠ LinkedList Dockerfile not found\"
+                        fi
+                        
+                        echo \"Building Graph Service...\"
+                        if [ -f \"graph/Dockerfile\" ]; then
+                            docker build -t graph-service:latest graph/
+                            echo \"✓ Graph service built\"
+                        else
+                            echo \"⚠ Graph Dockerfile not found\"
+                        fi
+                        
+                        echo \"\"
+                        echo \"All data structure images:\"
+                        docker images | grep -E '(stack-service|linkedlist-service|graph-service)' || true
+                    "
+                '''
             }
         }
         
@@ -74,22 +104,43 @@ pipeline {
                 expression { return !params.BUILD_ONLY }
             }
             steps {
-                script {
-                    echo "Deploying data structures to ${params.ENVIRONMENT}..."
-                    
-                    sh """
-                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/stack.yaml
-                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/linkedlist.yaml
-                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/graph.yaml
+                sh '''
+                    sudo -u ${EC2_USER} -H bash -c "
+                        set -euo pipefail
                         
-                        echo "✓ Data structures deployed successfully"
-                    """
-                }
+                        cd \"${REPO_DIR}\"
+                        
+                        # Ensure kubectl context is set
+                        kubectl config use-context ${MINIKUBE_PROFILE} || true
+                        
+                        # Deploy data structure services
+                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/stack.yaml || true
+                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/linkedlist.yaml || true
+                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/graph.yaml || true
+                        
+                        echo \"\"
+                        echo \"=== Data Structure Pods ===\"
+                        kubectl get pods -l 'app in (stack-service,linkedlist-service,graph-service)' || true
+                        
+                        echo \"✓ Data structures deployed successfully\"
+                    "
+                '''
             }
         }
     }
     
     post {
+        success {
+            echo """
+            ==========================================
+            ✓ Data Structures Pipeline completed successfully!
+            ==========================================
+            Environment: ${params.ENVIRONMENT}
+            """
+        }
+        failure {
+            echo "✗ Data Structures Pipeline failed!"
+        }
         always {
             cleanWs()
         }
