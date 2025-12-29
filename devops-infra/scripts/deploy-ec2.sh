@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# One-Click Deployment Script for EC2 (4GB RAM, 2 CPU)
-# This script deploys the complete architecture on a single EC2 instance
+# One-Click Deployment Script for EC2/Minikube (4GB RAM, 2 CPU)
+# This script deploys the complete architecture on a single EC2 instance with Minikube
 
 set -e
 
 echo "==========================================="
-echo "AKS Data Structures Platform - EC2 Deployment"
+echo "AKS Data Structures Platform - EC2/Minikube Deployment"
 echo "==========================================="
 echo ""
 
@@ -21,17 +21,60 @@ ENVIRONMENT=${1:-prod}
 DEPLOY_MONITORING=${2:-true}
 K8S_DIR="devops-infra/kubernetes"
 
-# Check if kubectl is available
-if ! command -v kubectl &> /dev/null; then
-    echo -e "${RED}Error: kubectl is not installed${NC}"
-    exit 1
-fi
+# Check prerequisites
+echo -e "${GREEN}Checking prerequisites...${NC}"
 
 # Check if Docker is available
 if ! command -v docker &> /dev/null; then
     echo -e "${RED}Error: Docker is not installed${NC}"
     exit 1
 fi
+echo -e "${GREEN}✓ Docker is installed${NC}"
+
+# Check if kubectl is available
+if ! command -v kubectl &> /dev/null; then
+    echo -e "${RED}Error: kubectl is not installed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ kubectl is installed${NC}"
+
+# Check if Minikube is available
+if ! command -v minikube &> /dev/null; then
+    echo -e "${RED}Error: Minikube is not installed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Minikube is installed${NC}"
+
+# Check Minikube status and start if needed
+echo -e "${YELLOW}Checking Minikube status...${NC}"
+if ! minikube status &> /dev/null; then
+    echo -e "${YELLOW}Minikube is not running. Starting Minikube...${NC}"
+    minikube start || {
+        echo -e "${RED}Error: Failed to start Minikube${NC}"
+        exit 1
+    }
+else
+    echo -e "${GREEN}✓ Minikube is running${NC}"
+fi
+
+# Configure kubectl for Minikube
+echo -e "${YELLOW}Configuring kubectl for Minikube...${NC}"
+minikube update-context || true
+
+# Set Docker to use Minikube's Docker daemon
+echo -e "${YELLOW}Configuring Docker to use Minikube daemon...${NC}"
+eval $(minikube docker-env) || {
+    echo -e "${YELLOW}⚠ Could not configure Minikube Docker env, continuing...${NC}"
+}
+
+# Verify kubectl access
+if kubectl get nodes &> /dev/null; then
+    echo -e "${GREEN}✓ kubectl is configured and can access cluster${NC}"
+else
+    echo -e "${YELLOW}⚠ kubectl may need configuration, but continuing...${NC}"
+fi
+
+echo ""
 
 echo -e "${GREEN}Step 1: Creating namespace${NC}"
 kubectl apply -f ${K8S_DIR}/namespaces/namespace.yaml || kubectl create namespace default --dry-run=client -o yaml | kubectl apply -f -
