@@ -59,6 +59,10 @@ pipeline {
         // Kubernetes
         KUBECONFIG = credentials('kubeconfig')
         
+        // EC2 SSH Configuration (optional - only if deploying to remote EC2)
+        // EC2_HOST = credentials('ec2-host')
+        // EC2_USER = credentials('ec2-user')
+        
         // Paths
         DEVOPS_INFRA_DIR = 'devops-infra'
     }
@@ -201,6 +205,108 @@ pipeline {
                     
                     echo "✓ Infrastructure deployed successfully"
                 '''
+            }
+        }
+        
+        stage('Deploy to EC2') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Stage: Deploy to EC2 via SSH"
+                    echo "==========================================="
+                    
+                    def ec2Host = credentials('ec2-host')
+                    def ec2User = credentials('ec2-user') ?: 'ubuntu'
+                    
+                    withCredentials([
+                        string(credentialsId: 'ec2-host', variable: 'EC2_HOST'),
+                        string(credentialsId: 'ec2-user', variable: 'EC2_USER', defaultValue: 'ubuntu'),
+                        sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
+                    ]) {
+                        sh """
+                            # Set proper permissions for SSH key
+                            chmod 600 \${SSH_KEY}
+                            
+                            # SSH into EC2 and deploy
+                            ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no \${EC2_USER}@\${EC2_HOST} << 'ENDSSH'
+                                set -e
+                                
+                                echo "==========================================="
+                                echo "Deploying on EC2 Instance"
+                                echo "==========================================="
+                                
+                                # Clone or update DevOps repo
+                                if [ -d "aks_data_structures_devops" ]; then
+                                    echo "Updating DevOps repo..."
+                                    cd aks_data_structures_devops
+                                    git fetch origin
+                                    git checkout ${params.BRANCH_NAME}
+                                    git pull origin ${params.BRANCH_NAME}
+                                else
+                                    echo "Cloning DevOps repo..."
+                                    git clone -b ${params.BRANCH_NAME} https://${GITHUB_PAT}@github.com/simple-ec2-deployment/aks_data_structures_devops.git
+                                    cd aks_data_structures_devops
+                                fi
+                                
+                                # Clone or update Frontend repo
+                                if [ -d "../aks_data_structures_frontend" ]; then
+                                    echo "Updating Frontend repo..."
+                                    cd ../aks_data_structures_frontend
+                                    git fetch origin
+                                    git checkout ${params.BRANCH_NAME}
+                                    git pull origin ${params.BRANCH_NAME}
+                                else
+                                    echo "Cloning Frontend repo..."
+                                    cd ..
+                                    git clone -b ${params.BRANCH_NAME} https://${GITHUB_PAT}@github.com/simple-ec2-deployment/aks_data_structures_frontend.git
+                                fi
+                                
+                                # Clone or update Backend repo
+                                if [ -d "aks_data_structures_backend" ]; then
+                                    echo "Updating Backend repo..."
+                                    cd aks_data_structures_backend
+                                    git fetch origin
+                                    git checkout ${params.BRANCH_NAME}
+                                    git pull origin ${params.BRANCH_NAME}
+                                else
+                                    echo "Cloning Backend repo..."
+                                    git clone -b ${params.BRANCH_NAME} https://${GITHUB_PAT}@github.com/simple-ec2-deployment/aks_data_structures_backend.git
+                                fi
+                                
+                                # Build Docker images
+                                echo "Building Docker images..."
+                                
+                                # Build Frontend
+                                cd aks_data_structures_frontend
+                                docker build -t ui-service:latest .
+                                
+                                # Build Backend
+                                cd ../aks_data_structures_backend
+                                docker build -t backend-service:latest .
+                                
+                                # Deploy using deployment script
+                                echo "Deploying to Kubernetes..."
+                                cd ../aks_data_structures_devops
+                                chmod +x devops-infra/scripts/deploy-ec2.sh
+                                ./devops-infra/scripts/deploy-ec2.sh ${params.ENVIRONMENT} ${params.DEPLOY_MONITORING}
+                                
+                                echo ""
+                                echo "==========================================="
+                                echo "Deployment Complete!"
+                                echo "==========================================="
+                                echo ""
+                                echo "Pod Status:"
+                                kubectl get pods
+                                echo ""
+                                echo "Services:"
+                                kubectl get services
+                                echo ""
+                                echo "Ingress:"
+                                kubectl get ingress
+                            ENDSSH
+                        """
+                    }
+                }
             }
         }
         
