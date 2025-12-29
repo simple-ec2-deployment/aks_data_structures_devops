@@ -49,17 +49,18 @@ pipeline {
     }
     
     environment {
-        // GitHub credentials
+        // GitHub credentials (required)
         GITHUB_PAT = credentials('github-pat-token')
         
-        // Docker registry
-        DOCKER_REGISTRY = credentials('docker-registry-url')
-        DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
+        // Docker registry (optional - not needed for local EC2 deployment)
+        // DOCKER_REGISTRY = credentials('docker-registry-url')
+        // DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
         
-        // Kubernetes
-        KUBECONFIG = credentials('kubeconfig')
+        // Kubernetes (optional - k3s uses default config)
+        // KUBECONFIG = credentials('kubeconfig')
         
         // Note: Jenkins is running on EC2, so no SSH needed
+        // Images are built and stored locally on EC2
         
         // Paths
         DEVOPS_INFRA_DIR = 'devops-infra'
