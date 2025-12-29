@@ -1,20 +1,6 @@
 // Main Orchestration Pipeline
 // This pipeline orchestrates the deployment of all services
 // Uses SSH to connect to EC2 and run commands there
-//
-// Two modes of operation:
-// 1. Direct mode (USE_CHILD_PIPELINES=false): Builds and deploys everything directly via SSH
-// 2. Child pipeline mode (USE_CHILD_PIPELINES=true): Calls separate pipelines for each service
-//
-// Required Jenkins Jobs (for child pipeline mode):
-// - backend-pipeline (uses Jenkinsfile.backend)
-// - frontend-pipeline (uses Jenkinsfile.frontend)
-// - data-structures-pipeline (uses Jenkinsfile.data-structures)
-//
-// Required Jenkins Credentials:
-// - github-pat-token: GitHub PAT token
-// - ec2-ssh-key: SSH private key for EC2 access
-// - ec2-host-ip: EC2 instance IP address
 
 pipeline {
     agent any
@@ -34,17 +20,22 @@ pipeline {
         string(
             name: 'INFRA_REPO_URL',
             defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_devops.git',
-            description: 'Infrastructure repo URL'
+            description: 'Infrastructure repo (k8s manifests, terraform, Jenkinsfile)'
         )
         string(
             name: 'API_REPO_URL',
             defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_backend.git',
-            description: 'Backend API repo URL'
+            description: 'Repo containing backend API service'
         )
         string(
             name: 'FRONTEND_REPO_URL',
             defaultValue: 'github.com/simple-ec2-deployment/aks_data_structures_frontend.git',
-            description: 'Frontend UI repo URL'
+            description: 'Repo containing frontend UI service'
+        )
+        booleanParam(
+            name: 'ENABLE_PORT_FORWARD',
+            defaultValue: true,
+            description: 'Enable port-forwarding to expose application on EC2 public IP'
         )
         string(
             name: 'MINIKUBE_PROFILE',
@@ -57,152 +48,48 @@ pipeline {
             description: 'Terraform workspace to use'
         )
         booleanParam(
-            name: 'DEPLOY_MONITORING',
-            defaultValue: false,
-            description: 'Deploy monitoring stack (Prometheus + Grafana)'
-        )
-        booleanParam(
-            name: 'ENABLE_PORT_FORWARD',
-            defaultValue: true,
-            description: 'Enable port-forwarding to expose application on EC2 public IP'
-        )
-        booleanParam(
             name: 'USE_CHILD_PIPELINES',
             defaultValue: false,
             description: 'Use separate child pipelines for services (backend, frontend, data-structures)'
-        )
-        booleanParam(
-            name: 'DEPLOY_BACKEND',
-            defaultValue: true,
-            description: 'Deploy backend service'
-        )
-        booleanParam(
-            name: 'DEPLOY_FRONTEND',
-            defaultValue: true,
-            description: 'Deploy frontend service'
-        )
-        booleanParam(
-            name: 'DEPLOY_DATA_STRUCTURES',
-            defaultValue: true,
-            description: 'Deploy data structures services (stack, linkedlist, graph)'
         )
     }
     
     environment {
         BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
+        // GitHub credentials (PAT token stored in Jenkins)
         GITHUB_PAT = credentials('github-pat-token')
+        
+        // EC2 SSH credentials
         EC2_SSH_KEY = credentials('ec2-ssh-key')
         EC2_USER = 'ubuntu'
         EC2_HOST = credentials('ec2-host-ip')
-        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
-        TERRAFORM_WORKSPACE = "${params.TERRAFORM_WORKSPACE}"
+        
+        // Repository details
+        REPO_URL = "${params.INFRA_REPO_URL}"
         REPO_DIR = '/home/ubuntu/aks_data_structures_devops'
         API_DIR = '/home/ubuntu/backend'
         FRONTEND_DIR = '/home/ubuntu/frontend'
+        
+        // Minikube settings
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        TERRAFORM_WORKSPACE = "${params.TERRAFORM_WORKSPACE}"
     }
     
     stages {
-        stage('Checkout') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage: Checkout (Branch: ${params.BRANCH_NAME})"
-                    echo "=========================================="
-                }
-                
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: "*/${params.BRANCH_NAME}"]],
-                    extensions: [[$class: 'CleanBeforeCheckout']],
-                    userRemoteConfigs: [[
-                        credentialsId: 'github-pat-token',
-                        url: "https://${params.INFRA_REPO_URL}"
-                    ]]
-                ])
-            }
-        }
-        
         stage('Checkout & Clone to EC2') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Cloning repository to EC2"
-                    echo "=========================================="
-                }
-                
-                sshagent(credentials: ['ec2-ssh-key']) {
-                    script {
-                        def githubPat = GITHUB_PAT
-                        def scriptContent = """set -euo pipefail
-BRANCH='${BRANCH_NAME}'
-REPO_DIR='${REPO_DIR}'
-REPO_URL='${params.INFRA_REPO_URL}'
-GITHUB_PAT='""" + githubPat + """'
-
-normalize_url() {
-  local input="\\$1"
-  if echo "\\$input" | grep -qiE '^git@github.com:'; then
-    input=\\$(echo "\\$input" | sed -E 's|^git@github.com:|https://github.com/|')
-  elif echo "\\$input" | grep -qiE '^ssh://git@github.com/'; then
-    input=\\$(echo "\\$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-  elif ! echo "\\$input" | grep -qiE '^https?://'; then
-    input="https://\\$input"
-  fi
-  echo "\\$input"
-}
-
-FULL_URL="\\$(normalize_url "\\$REPO_URL")"
-echo "Repo (normalized): \\$FULL_URL"
-echo "Branch: \\$BRANCH"
-
-TOKEN="\\$GITHUB_PAT"
-AUTH_B64="\\$(printf '%s' "x-access-token:\\$TOKEN" | base64 | tr -d '\\n')"
-AUTH_HEADER="Authorization: Basic \\$AUTH_B64"
-
-if [ ! -d "\\$REPO_DIR/.git" ]; then
-  mkdir -p "\\$REPO_DIR"
-  echo "Cloning repository from branch: \\$BRANCH..."
-  git -c http.extraHeader="\\$AUTH_HEADER" clone -b "\\$BRANCH" "\\$FULL_URL" "\\$REPO_DIR"
-else
-  echo "Repository exists, pulling latest changes from branch: \\$BRANCH..."
-  cd "\\$REPO_DIR"
-  git config --global --add safe.directory "\\$REPO_DIR"
-  git checkout "\\$BRANCH" || git checkout -b "\\$BRANCH" "origin/\\$BRANCH"
-  git -c http.extraHeader="\\$AUTH_HEADER" pull "\\$FULL_URL" "\\$BRANCH" || {
-    echo "Pull failed, trying to reset..."
-    git fetch --all
-    git reset --hard "origin/\\$BRANCH"
-  }
-fi
-
-cd "\\$REPO_DIR"
-echo "Current branch: \\$(git branch --show-current)"
-echo "Latest commit:  \\$(git rev-parse --short HEAD)"
-"""
-                        
-                        sh """
-                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} 'echo "Connected to EC2 instance"'
-                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} bash -s <<'REMOTE_SCRIPT'
-${scriptContent}
-REMOTE_SCRIPT
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Clone Service Repos to EC2') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage: Cloning service repositories to EC2"
+                    echo "Stage 1: Cloning repository to EC2"
                     echo "=========================================="
                 }
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
+                        
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' API_REPO='${params.API_REPO_URL}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+                          "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' bash -s" <<'SCRIPT'
 set -euo pipefail
 : "${BRANCH:=main}"
 
@@ -218,16 +105,87 @@ normalize_url() {
   echo "$input"
 }
 
-# Use GITHUB_PAT for authentication
-TOKEN="$GITHUB_PAT"
-AUTH_B64="$(printf '%s' "x-access-token:$TOKEN" | base64 | tr -d '\n')"
+FULL_URL="$(normalize_url "$REPO_URL")"
+echo "Repo (normalized): $FULL_URL"
+echo "Branch: $BRANCH"
+if [ -n "${GITHUB_PASS:-}" ]; then
+  TOKEN="$GITHUB_PASS"
+else
+  TOKEN="$GITHUB_PAT"
+fi
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR"
+  echo "Cloning repository from branch: $BRANCH..."
+  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
+else
+  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
+  cd "$REPO_DIR"
+  git config --global --add safe.directory "$REPO_DIR"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+    echo "Pull failed, trying to reset..."
+    git fetch --all
+    git reset --hard "origin/$BRANCH"
+  }
+fi
+
+cd "$REPO_DIR"
+echo "Current branch: $(git branch --show-current)"
+echo "Latest commit:  $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Clone Service Repos to EC2') {
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage 2: Cloning service repositories to EC2"
+                    echo "=========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' API_REPO='${params.API_REPO_URL}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+sanitize_url() {
+  local input="$1"
+  echo "$input" | sed -E "s|^https://github.com/||; s|^http://github.com/||"
+}
+if [ -n "${GITHUB_PASS:-}" ]; then
+  TOKEN="$GITHUB_PASS"
+else
+  TOKEN="$GITHUB_PAT"
+fi
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
 AUTH_HEADER="Authorization: Basic $AUTH_B64"
 
 clone_or_update() {
   local url="$1"; local dir="$2"
   local full="$(normalize_url "$url")"
+  local clean="$(sanitize_url "$full")"
   if [ ! -d "$dir/.git" ]; then
-    echo "Cloning $full to $dir (branch: $BRANCH) ..."
+    echo "Cloning $clean to $dir (branch: $BRANCH) ..."
     git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$full" "$dir"
   else
     echo "Updating $dir (branch: $BRANCH) ..."
@@ -261,7 +219,7 @@ SCRIPT
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Ensuring Minikube is running on EC2"
+                    echo "Stage 3: Ensuring Minikube is running on EC2"
                     echo "=========================================="
                 }
                 
@@ -270,11 +228,9 @@ SCRIPT
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
                           "EC2_USER='${EC2_USER}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
 set -euo pipefail
-
 # Fix permissions from earlier sudo/root runs
 sudo mkdir -p "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
 sudo chown -R "${EC2_USER}:${EC2_USER}" "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
-
 # Ensure docker is usable (group + socket)
 if ! id -nG "${EC2_USER}" | tr ' ' '\n' | grep -qx docker; then
   echo 'Adding user to docker group...'
@@ -283,33 +239,29 @@ fi
 sudo systemctl enable docker >/dev/null 2>&1 || true
 sudo systemctl restart docker >/dev/null 2>&1 || true
 sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
-
 echo 'Docker socket check:'
-docker version || {
+sudo -u "${EC2_USER}" -H bash -lc 'docker version' || {
   echo 'Failed to access docker socket even after docker group fixes.'
   exit 1
 }
-
 # Check if Minikube is running
-if minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running; then
+if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running"; then
   echo '✓ Minikube is already running'
 else
   echo 'Starting Minikube...'
-  minikube start -p ${MINIKUBE_PROFILE} --driver=docker || {
+  sudo -u "${EC2_USER}" -H bash -lc "minikube start" || {
     echo 'Failed to start Minikube'
     exit 1
   }
   echo '✓ Minikube started successfully'
 fi
-
 # Get Minikube IP
-MINIKUBE_IP="$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || true)"
+MINIKUBE_IP="$(sudo -u "${EC2_USER}" -H bash -lc "minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null" || true)"
 if [ -n "$MINIKUBE_IP" ]; then
   echo "Minikube IP: $MINIKUBE_IP"
 fi
-
 # Verify kubectl access
-kubectl cluster-info || {
+sudo -u "${EC2_USER}" -H bash -lc 'kubectl cluster-info' || {
   echo 'ERROR: Cannot access Kubernetes cluster'
   exit 1
 }
@@ -326,7 +278,7 @@ SCRIPT
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Building Docker images on EC2 (Direct)"
+                    echo "Stage 4: Building Docker images on EC2 (Direct)"
                     echo "=========================================="
                 }
                 
@@ -335,13 +287,10 @@ SCRIPT
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
                           "REPO_DIR='${REPO_DIR}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
 set -euo pipefail
-
 # Use infra repo as working dir
 cd "${REPO_DIR}"
-
 # Point Docker to Minikube
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
-
 build_if_exists() {
   local tag="$1"; local path="$2"
   if [ -f "$path/Dockerfile" ]; then
@@ -352,18 +301,14 @@ build_if_exists() {
     echo "WARNING: Dockerfile not found at $path"
   fi
 }
-
 # Data-structures services (from infra repo)
 build_if_exists stack-service "${REPO_DIR}/stack"
 build_if_exists linkedlist-service "${REPO_DIR}/linkedlist"
 build_if_exists graph-service "${REPO_DIR}/graph"
-
 # API service
 build_if_exists backend-service "${API_DIR}"
-
 # Frontend service
 build_if_exists ui-service "${FRONTEND_DIR}"
-
 echo ''
 echo 'All images built successfully:'
 docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
@@ -379,9 +324,6 @@ SCRIPT
             }
             parallel {
                 stage('Deploy Data Structures') {
-                    when {
-                        expression { return params.DEPLOY_DATA_STRUCTURES }
-                    }
                     steps {
                         script {
                             echo "=========================================="
@@ -391,10 +333,7 @@ SCRIPT
                         build job: 'data-structures-pipeline', 
                             parameters: [
                                 string(name: 'BRANCH_NAME', value: "${params.BRANCH_NAME}"),
-                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}"),
-                                choice(name: 'ENVIRONMENT', value: 'dev'),
-                                booleanParam(name: 'BUILD_ONLY', value: false),
-                                booleanParam(name: 'DEPLOY_ONLY', value: false)
+                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}")
                             ],
                             wait: true,
                             propagate: true
@@ -402,9 +341,6 @@ SCRIPT
                 }
                 
                 stage('Deploy Backend') {
-                    when {
-                        expression { return params.DEPLOY_BACKEND }
-                    }
                     steps {
                         script {
                             echo "=========================================="
@@ -415,11 +351,7 @@ SCRIPT
                             parameters: [
                                 string(name: 'BRANCH_NAME', value: "${params.BRANCH_NAME}"),
                                 string(name: 'API_REPO_URL', value: "${params.API_REPO_URL}"),
-                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}"),
-                                choice(name: 'ENVIRONMENT', value: 'dev'),
-                                booleanParam(name: 'BUILD_ONLY', value: false),
-                                booleanParam(name: 'DEPLOY_ONLY', value: false),
-                                booleanParam(name: 'RUN_INTEGRATION_TESTS', value: true)
+                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}")
                             ],
                             wait: true,
                             propagate: true
@@ -427,9 +359,6 @@ SCRIPT
                 }
                 
                 stage('Deploy Frontend') {
-                    when {
-                        expression { return params.DEPLOY_FRONTEND }
-                    }
                     steps {
                         script {
                             echo "=========================================="
@@ -440,10 +369,7 @@ SCRIPT
                             parameters: [
                                 string(name: 'BRANCH_NAME', value: "${params.BRANCH_NAME}"),
                                 string(name: 'FRONTEND_REPO_URL', value: "${params.FRONTEND_REPO_URL}"),
-                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}"),
-                                choice(name: 'ENVIRONMENT', value: 'dev'),
-                                booleanParam(name: 'BUILD_ONLY', value: false),
-                                booleanParam(name: 'DEPLOY_ONLY', value: false)
+                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}")
                             ],
                             wait: true,
                             propagate: true
@@ -456,12 +382,8 @@ SCRIPT
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Deploying Infrastructure with Terraform on EC2"
+                    echo "Stage 5: Deploying with Terraform on EC2"
                     echo "=========================================="
-                    if (params.USE_CHILD_PIPELINES) {
-                        echo "Note: Child pipelines handle service deployments"
-                        echo "This stage deploys infrastructure (database, ingress, monitoring)"
-                    }
                 }
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
@@ -470,7 +392,6 @@ SCRIPT
                             REPO_DIR='${REPO_DIR}'
                             TERRAFORM_WORKSPACE='${TERRAFORM_WORKSPACE}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
-                            DEPLOY_MONITORING='${DEPLOY_MONITORING}'
                             
                             cd \\${REPO_DIR}/terraform/\\${TERRAFORM_WORKSPACE}
                             
@@ -508,7 +429,7 @@ SCRIPT
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Verifying deployment on EC2"
+                    echo "Stage 6: Verifying deployment on EC2"
                     echo "=========================================="
                 }
                 
@@ -529,7 +450,6 @@ SCRIPT
                             echo '  Branch:' \\$(git branch --show-current)
                             echo '  Commit:' \\$(git log -1 --oneline)
                             echo ''
-                            
                             for repo in \"\\$API_DIR\" \"\\$FRONTEND_DIR\"; do
                               if [ -d \"\\$repo/.git\" ]; then
                                 cd \"\\$repo\"
@@ -628,7 +548,7 @@ SCRIPT
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Setting up port-forward (Optional)"
+                    echo "Stage 7: Setting up port-forward (Optional)"
                     echo "=========================================="
                 }
                 
@@ -649,7 +569,6 @@ SCRIPT
 [Unit]
 Description=Kubernetes Port Forward for Ingress
 After=network.target
-
 [Service]
 Type=simple
 User=ubuntu
@@ -660,7 +579,6 @@ Restart=always
 RestartSec=5
 StandardOutput=append:/tmp/ingress-port-forward.log
 StandardError=append:/tmp/ingress-port-forward.log
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -721,31 +639,27 @@ EOF
     
     post {
         success {
-            echo """
-            ==========================================
-            ✓ Pipeline completed successfully!
-            ==========================================
-            Application deployed on EC2 instance: ${EC2_HOST}
-            Access the application at: http://${EC2_HOST}:32080/
-            
-            Port-forward service is running as systemd service
-            To check status: ssh ${EC2_USER}@${EC2_HOST} 'sudo systemctl status k8s-port-forward'
-            """
+            echo "=========================================="
+            echo "Pipeline completed successfully! ✓"
+            echo "=========================================="
+            echo "Application deployed on EC2 instance: ${EC2_HOST}"
+            echo "Access the application at: http://${EC2_HOST}:32080/"
+            echo ""
+            echo "Port-forward service is running as systemd service"
+            echo "To check status: ssh ${EC2_USER}@${EC2_HOST} 'sudo systemctl status k8s-port-forward'"
         }
         always {
-            echo """
-            ==========================================
-            Pipeline execution completed.
-            ==========================================
-            
-            Deployment Summary:
-              - Branch: ${params.BRANCH_NAME}
-              - Minikube Profile: ${params.MINIKUBE_PROFILE}
-              - Terraform Workspace: ${params.TERRAFORM_WORKSPACE}
-              - Port Forward: ${params.ENABLE_PORT_FORWARD}
-            
-            Application URL: http://${EC2_HOST}:32080/
-            """
+            echo "=========================================="
+            echo "Pipeline execution completed."
+            echo "=========================================="
+            echo ""
+            echo "Deployment Summary:"
+            echo "  - Branch: ${params.BRANCH_NAME}"
+            echo "  - Minikube Profile: ${params.MINIKUBE_PROFILE}"
+            echo "  - Terraform Workspace: ${params.TERRAFORM_WORKSPACE}"
+            echo "  - Port Forward: ${params.ENABLE_PORT_FORWARD}"
+            echo ""
+            echo "Application URL: http://${EC2_HOST}:32080/"
         }
     }
 }
