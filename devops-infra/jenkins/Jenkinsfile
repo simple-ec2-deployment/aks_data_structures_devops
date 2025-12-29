@@ -97,31 +97,38 @@ pipeline {
                 
                 sh '''
                     echo "Checking prerequisites..."
+                    set +e  # Don't exit on error, we'll handle it manually
                     
                     # Check Docker
-                    if ! command -v docker &> /dev/null; then
+                    DOCKER_CMD=$(command -v docker 2>/dev/null || which docker 2>/dev/null || echo "")
+                    if [ -z "$DOCKER_CMD" ]; then
                         echo "✗ Docker is not installed"
                         exit 1
                     fi
-                    echo "✓ Docker is installed: $(docker --version)"
+                    echo "✓ Docker is installed: $DOCKER_CMD"
+                    docker --version || echo "⚠ Docker command found but may not be working"
                     
                     # Check kubectl
-                    if ! command -v kubectl &> /dev/null; then
+                    KUBECTL_CMD=$(command -v kubectl 2>/dev/null || which kubectl 2>/dev/null || echo "")
+                    if [ -z "$KUBECTL_CMD" ]; then
                         echo "✗ kubectl is not installed"
                         exit 1
                     fi
-                    echo "✓ kubectl is installed: $(kubectl version --client --short 2>/dev/null || echo 'installed')"
+                    echo "✓ kubectl is installed: $KUBECTL_CMD"
+                    kubectl version --client --short 2>/dev/null || echo "✓ kubectl is available"
                     
                     # Check Minikube
-                    if ! command -v minikube &> /dev/null; then
+                    MINIKUBE_CMD=$(command -v minikube 2>/dev/null || which minikube 2>/dev/null || echo "")
+                    if [ -z "$MINIKUBE_CMD" ]; then
                         echo "✗ Minikube is not installed"
                         exit 1
                     fi
-                    echo "✓ Minikube is installed: $(minikube version --short 2>/dev/null || echo 'installed')"
+                    echo "✓ Minikube is installed: $MINIKUBE_CMD"
+                    minikube version --short 2>/dev/null || echo "✓ Minikube is available"
                     
                     # Check Minikube status
                     echo "Checking Minikube status..."
-                    if ! minikube status &> /dev/null; then
+                    if ! minikube status 2>/dev/null | grep -q "Running"; then
                         echo "Minikube is not running. Starting Minikube..."
                         minikube start || {
                             echo "✗ Failed to start Minikube"
@@ -132,13 +139,13 @@ pipeline {
                     
                     # Configure kubectl for Minikube
                     echo "Configuring kubectl for Minikube..."
-                    minikube kubectl -- get nodes &> /dev/null || {
+                    minikube update-context 2>/dev/null || {
                         echo "Setting up kubectl context..."
                         minikube update-context || true
                     }
                     
                     # Verify kubectl access
-                    if kubectl get nodes &> /dev/null; then
+                    if kubectl get nodes 2>/dev/null; then
                         echo "✓ kubectl is configured and can access cluster"
                         kubectl get nodes
                     else
@@ -147,10 +154,11 @@ pipeline {
                     
                     # Set Docker to use Minikube's Docker daemon
                     echo "Configuring Docker to use Minikube daemon..."
-                    eval $(minikube docker-env) || {
+                    eval $(minikube docker-env 2>/dev/null) || {
                         echo "⚠ Could not configure Minikube Docker env, continuing..."
                     }
                     
+                    set -e  # Re-enable exit on error
                     echo ""
                     echo "✓ All prerequisites checked"
                 '''
