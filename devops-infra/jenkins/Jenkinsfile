@@ -131,54 +131,62 @@ pipeline {
                 }
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
-                        
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${params.INFRA_REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' bash -s" <<'ENDSSH'
+                    script {
+                        def scriptContent = """
 set -euo pipefail
+BRANCH='${BRANCH_NAME}'
+REPO_DIR='${REPO_DIR}'
+REPO_URL='${params.INFRA_REPO_URL}'
+GITHUB_PAT='${GITHUB_PAT}'
 
 normalize_url() {
-  local input="$1"
-  if echo "$input" | grep -qiE '^git@github.com:'; then
-    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
-  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
-    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-  elif ! echo "$input" | grep -qiE '^https?://'; then
-    input="https://$input"
+  local input="\\$1"
+  if echo "\\$input" | grep -qiE '^git@github.com:'; then
+    input=\\$(echo "\\$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "\\$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=\\$(echo "\\$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "\\$input" | grep -qiE '^https?://'; then
+    input="https://\\$input"
   fi
-  echo "$input"
+  echo "\\$input"
 }
 
-FULL_URL="$(normalize_url "$REPO_URL")"
-echo "Repo (normalized): $FULL_URL"
-echo "Branch: $BRANCH"
+FULL_URL="\\$(normalize_url "\\$REPO_URL")"
+echo "Repo (normalized): \\$FULL_URL"
+echo "Branch: \\$BRANCH"
 
-# Use GITHUB_PAT for authentication
-TOKEN="$GITHUB_PAT"
-AUTH_B64="$(printf '%s' "x-access-token:$TOKEN" | base64 | tr -d '\n')"
-AUTH_HEADER="Authorization: Basic $AUTH_B64"
+TOKEN="\\$GITHUB_PAT"
+AUTH_B64="\\$(printf '%s' "x-access-token:\\$TOKEN" | base64 | tr -d '\\n')"
+AUTH_HEADER="Authorization: Basic \\$AUTH_B64"
 
-if [ ! -d "$REPO_DIR/.git" ]; then
-  mkdir -p "$REPO_DIR"
-  echo "Cloning repository from branch: $BRANCH..."
-  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
+if [ ! -d "\\$REPO_DIR/.git" ]; then
+  mkdir -p "\\$REPO_DIR"
+  echo "Cloning repository from branch: \\$BRANCH..."
+  git -c http.extraHeader="\\$AUTH_HEADER" clone -b "\\$BRANCH" "\\$FULL_URL" "\\$REPO_DIR"
 else
-  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
-  cd "$REPO_DIR"
-  git config --global --add safe.directory "$REPO_DIR"
-  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+  echo "Repository exists, pulling latest changes from branch: \\$BRANCH..."
+  cd "\\$REPO_DIR"
+  git config --global --add safe.directory "\\$REPO_DIR"
+  git checkout "\\$BRANCH" || git checkout -b "\\$BRANCH" "origin/\\$BRANCH"
+  git -c http.extraHeader="\\$AUTH_HEADER" pull "\\$FULL_URL" "\\$BRANCH" || {
     echo "Pull failed, trying to reset..."
     git fetch --all
-    git reset --hard "origin/$BRANCH"
+    git reset --hard "origin/\\$BRANCH"
   }
 fi
 
-cd "$REPO_DIR"
-echo "Current branch: $(git branch --show-current)"
-echo "Latest commit:  $(git rev-parse --short HEAD)"
-ENDSSH
-                    '''
+cd "\\$REPO_DIR"
+echo "Current branch: \\$(git branch --show-current)"
+echo "Latest commit:  \\$(git rev-parse --short HEAD)"
+"""
+                        
+                        sh """
+                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} 'echo "Connected to EC2 instance"'
+                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} bash -s <<'REMOTE_SCRIPT'
+${scriptContent}
+REMOTE_SCRIPT
+                        """
+                    }
                 }
             }
         }
