@@ -1,6 +1,6 @@
 // Data Structures Build and Deploy Pipeline
 // Handles building the core data structure services: stack, linkedlist, and graph
-// Runs directly on EC2 where Jenkins is installed
+// Uses SSH to connect to EC2 and run commands there
 
 pipeline {
     agent any
@@ -42,6 +42,8 @@ pipeline {
     environment {
         DEVOPS_INFRA_DIR = 'devops-infra'
         EC2_USER = 'ubuntu'
+        EC2_SSH_KEY = credentials('ec2-ssh-key')
+        EC2_HOST = credentials('ec2-host-ip')
         MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
         REPO_DIR = '/home/ubuntu/aks_data_structures_devops'
     }
@@ -53,90 +55,85 @@ pipeline {
             }
         }
         
-        stage('Build Data Structures') {
+        stage('Build Data Structures on EC2') {
             when {
                 expression { return !params.DEPLOY_ONLY }
             }
             steps {
-                sh '''
-                    set -x  # Enable command tracing
-                    echo "Current user: $(whoami)"
-                    
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        set -x  # Enable command tracing
-                        echo 'Running as user: '\$(whoami)
-                        echo 'User groups: '\$(groups)
-                        
-                        cd \"${REPO_DIR}\"
-                        
-                        # Point Docker to Minikube daemon
-                        eval \"\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\"
-                        
-                        echo \"Building Stack Service...\"
-                        if [ -f \"stack/Dockerfile\" ]; then
-                            docker build -t stack-service:latest stack/
-                            echo \"✓ Stack service built\"
-                        else
-                            echo \"⚠ Stack Dockerfile not found\"
-                        fi
-                        
-                        echo \"Building LinkedList Service...\"
-                        if [ -f \"linkedlist/Dockerfile\" ]; then
-                            docker build -t linkedlist-service:latest linkedlist/
-                            echo \"✓ LinkedList service built\"
-                        else
-                            echo \"⚠ LinkedList Dockerfile not found\"
-                        fi
-                        
-                        echo \"Building Graph Service...\"
-                        if [ -f \"graph/Dockerfile\" ]; then
-                            docker build -t graph-service:latest graph/
-                            echo \"✓ Graph service built\"
-                        else
-                            echo \"⚠ Graph Dockerfile not found\"
-                        fi
-                        
-                        echo \"\"
-                        echo \"All data structure images:\"
-                        docker images | grep -E '(stack-service|linkedlist-service|graph-service)' || true
-                    "
-                '''
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            REPO_DIR='${REPO_DIR}'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            
+                            cd \\${REPO_DIR}
+                            
+                            # Point Docker to Minikube daemon
+                            eval \\\"\\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\\\"
+                            
+                            echo 'Building Stack Service...'
+                            if [ -f \\\"stack/Dockerfile\\\" ]; then
+                                docker build -t stack-service:latest stack/
+                                echo '✓ Stack service built'
+                            else
+                                echo '⚠ Stack Dockerfile not found'
+                            fi
+                            
+                            echo 'Building LinkedList Service...'
+                            if [ -f \\\"linkedlist/Dockerfile\\\" ]; then
+                                docker build -t linkedlist-service:latest linkedlist/
+                                echo '✓ LinkedList service built'
+                            else
+                                echo '⚠ LinkedList Dockerfile not found'
+                            fi
+                            
+                            echo 'Building Graph Service...'
+                            if [ -f \\\"graph/Dockerfile\\\" ]; then
+                                docker build -t graph-service:latest graph/
+                                echo '✓ Graph service built'
+                            else
+                                echo '⚠ Graph Dockerfile not found'
+                            fi
+                            
+                            echo ''
+                            echo 'All data structure images:'
+                            docker images | grep -E '(stack-service|linkedlist-service|graph-service)' || true
+                        "
+                    '''
+                }
             }
         }
         
-        stage('Deploy to Kubernetes') {
+        stage('Deploy to Kubernetes on EC2') {
             when {
                 expression { return !params.BUILD_ONLY }
             }
             steps {
-                sh '''
-                    set -x  # Enable command tracing
-                    echo "Current user: $(whoami)"
-                    
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        set -x  # Enable command tracing
-                        echo 'Running as user: '\$(whoami)
-                        echo 'User groups: '\$(groups)
-                        
-                        cd \"${REPO_DIR}\"
-                        
-                        # Ensure kubectl context is set
-                        kubectl config use-context ${MINIKUBE_PROFILE} || true
-                        
-                        # Deploy data structure services
-                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/stack.yaml || true
-                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/linkedlist.yaml || true
-                        kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/graph.yaml || true
-                        
-                        echo \"\"
-                        echo \"=== Data Structure Pods ===\"
-                        kubectl get pods -l 'app in (stack-service,linkedlist-service,graph-service)' || true
-                        
-                        echo \"✓ Data structures deployed successfully\"
-                    "
-                '''
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            REPO_DIR='${REPO_DIR}'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            DEVOPS_INFRA_DIR='devops-infra'
+                            
+                            cd \\${REPO_DIR}
+                            
+                            # Ensure kubectl context is set
+                            kubectl config use-context ${MINIKUBE_PROFILE} || true
+                            
+                            # Deploy data structure services
+                            kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/stack.yaml || true
+                            kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/linkedlist.yaml || true
+                            kubectl apply -f ${DEVOPS_INFRA_DIR}/kubernetes/data-structures/graph.yaml || true
+                            
+                            echo ''
+                            echo '=== Data Structure Pods ==='
+                            kubectl get pods -l 'app in (stack-service,linkedlist-service,graph-service)' || true
+                            
+                            echo '✓ Data structures deployed successfully'
+                        "
+                    '''
+                }
             }
         }
     }

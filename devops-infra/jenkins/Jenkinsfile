@@ -1,6 +1,20 @@
 // Main Orchestration Pipeline
 // This pipeline orchestrates the deployment of all services
 // Uses SSH to connect to EC2 and run commands there
+//
+// Two modes of operation:
+// 1. Direct mode (USE_CHILD_PIPELINES=false): Builds and deploys everything directly via SSH
+// 2. Child pipeline mode (USE_CHILD_PIPELINES=true): Calls separate pipelines for each service
+//
+// Required Jenkins Jobs (for child pipeline mode):
+// - backend-pipeline (uses Jenkinsfile.backend)
+// - frontend-pipeline (uses Jenkinsfile.frontend)
+// - data-structures-pipeline (uses Jenkinsfile.data-structures)
+//
+// Required Jenkins Credentials:
+// - github-pat-token: GitHub PAT token
+// - ec2-ssh-key: SSH private key for EC2 access
+// - ec2-host-ip: EC2 instance IP address
 
 pipeline {
     agent any
@@ -51,6 +65,26 @@ pipeline {
             name: 'ENABLE_PORT_FORWARD',
             defaultValue: true,
             description: 'Enable port-forwarding to expose application on EC2 public IP'
+        )
+        booleanParam(
+            name: 'USE_CHILD_PIPELINES',
+            defaultValue: false,
+            description: 'Use separate child pipelines for services (backend, frontend, data-structures)'
+        )
+        booleanParam(
+            name: 'DEPLOY_BACKEND',
+            defaultValue: true,
+            description: 'Deploy backend service'
+        )
+        booleanParam(
+            name: 'DEPLOY_FRONTEND',
+            defaultValue: true,
+            description: 'Deploy frontend service'
+        )
+        booleanParam(
+            name: 'DEPLOY_DATA_STRUCTURES',
+            defaultValue: true,
+            description: 'Deploy data structures services (stack, linkedlist, graph)'
         )
     }
     
@@ -285,11 +319,14 @@ SCRIPT
             }
         }
         
-        stage('Build Docker Images on EC2') {
+        stage('Build & Deploy Services') {
+            when {
+                expression { return !params.USE_CHILD_PIPELINES }
+            }
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Building Docker images on EC2"
+                    echo "Stage: Building Docker images on EC2 (Direct)"
                     echo "=========================================="
                 }
                 
@@ -336,12 +373,95 @@ SCRIPT
             }
         }
         
-        stage('Deploy with Terraform on EC2') {
+        stage('Call Child Pipelines') {
+            when {
+                expression { return params.USE_CHILD_PIPELINES }
+            }
+            parallel {
+                stage('Deploy Data Structures') {
+                    when {
+                        expression { return params.DEPLOY_DATA_STRUCTURES }
+                    }
+                    steps {
+                        script {
+                            echo "=========================================="
+                            echo "Calling Data Structures Pipeline"
+                            echo "=========================================="
+                        }
+                        build job: 'data-structures-pipeline', 
+                            parameters: [
+                                string(name: 'BRANCH_NAME', value: "${params.BRANCH_NAME}"),
+                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}"),
+                                choice(name: 'ENVIRONMENT', value: 'dev'),
+                                booleanParam(name: 'BUILD_ONLY', value: false),
+                                booleanParam(name: 'DEPLOY_ONLY', value: false)
+                            ],
+                            wait: true,
+                            propagate: true
+                    }
+                }
+                
+                stage('Deploy Backend') {
+                    when {
+                        expression { return params.DEPLOY_BACKEND }
+                    }
+                    steps {
+                        script {
+                            echo "=========================================="
+                            echo "Calling Backend Pipeline"
+                            echo "=========================================="
+                        }
+                        build job: 'backend-pipeline',
+                            parameters: [
+                                string(name: 'BRANCH_NAME', value: "${params.BRANCH_NAME}"),
+                                string(name: 'API_REPO_URL', value: "${params.API_REPO_URL}"),
+                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}"),
+                                choice(name: 'ENVIRONMENT', value: 'dev'),
+                                booleanParam(name: 'BUILD_ONLY', value: false),
+                                booleanParam(name: 'DEPLOY_ONLY', value: false),
+                                booleanParam(name: 'RUN_INTEGRATION_TESTS', value: true)
+                            ],
+                            wait: true,
+                            propagate: true
+                    }
+                }
+                
+                stage('Deploy Frontend') {
+                    when {
+                        expression { return params.DEPLOY_FRONTEND }
+                    }
+                    steps {
+                        script {
+                            echo "=========================================="
+                            echo "Calling Frontend Pipeline"
+                            echo "=========================================="
+                        }
+                        build job: 'frontend-pipeline',
+                            parameters: [
+                                string(name: 'BRANCH_NAME', value: "${params.BRANCH_NAME}"),
+                                string(name: 'FRONTEND_REPO_URL', value: "${params.FRONTEND_REPO_URL}"),
+                                string(name: 'MINIKUBE_PROFILE', value: "${params.MINIKUBE_PROFILE}"),
+                                choice(name: 'ENVIRONMENT', value: 'dev'),
+                                booleanParam(name: 'BUILD_ONLY', value: false),
+                                booleanParam(name: 'DEPLOY_ONLY', value: false)
+                            ],
+                            wait: true,
+                            propagate: true
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy Infrastructure with Terraform') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Deploying with Terraform on EC2"
+                    echo "Stage: Deploying Infrastructure with Terraform on EC2"
                     echo "=========================================="
+                    if (params.USE_CHILD_PIPELINES) {
+                        echo "Note: Child pipelines handle service deployments"
+                        echo "This stage deploys infrastructure (database, ingress, monitoring)"
+                    }
                 }
                 
                 sshagent(credentials: ['ec2-ssh-key']) {

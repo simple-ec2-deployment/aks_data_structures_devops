@@ -1,6 +1,6 @@
 // Frontend Build and Deploy Pipeline
 // Handles building, testing, and deploying the frontend service
-// Runs directly on EC2 where Jenkins is installed
+// Uses SSH to connect to EC2 and run commands there
 
 pipeline {
     agent any
@@ -55,6 +55,8 @@ pipeline {
         FRONTEND_DIR = '/home/ubuntu/frontend'
         K8S_MANIFESTS = 'devops-infra/kubernetes/frontend'
         EC2_USER = 'ubuntu'
+        EC2_SSH_KEY = credentials('ec2-ssh-key')
+        EC2_HOST = credentials('ec2-host-ip')
         MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
         GITHUB_PAT = credentials('github-pat-token')
     }
@@ -70,62 +72,66 @@ pipeline {
                 }
                 
                 checkout scm
-                
-                sh '''
-                    set -x  # Enable command tracing
-                    echo "Current user: $(whoami)"
-                    
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        set -x  # Enable command tracing
-                        echo 'Running as user: '\$(whoami)
-                        echo 'User groups: '\$(groups)
-                        : \"\${BRANCH:=${BRANCH_NAME}}\"
-                        
-                        normalize_url() {
-                            local input=\"\$1\"
-                            if echo \"\$input\" | grep -qiE '^git@github.com:'; then
-                                input=\$(echo \"\$input\" | sed -E 's|^git@github.com:|https://github.com/|')
-                            elif echo \"\$input\" | grep -qiE '^ssh://git@github.com/'; then
-                                input=\$(echo \"\$input\" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-                            elif ! echo \"\$input\" | grep -qiE '^https?://'; then
-                                input=\"https://\$input\"
-                            fi
-                            echo \"\$input\"
-                        }
-                        
-                        if [ -n \"${GITHUB_PAT_PSW:-}\" ]; then
-                            TOKEN=\"${GITHUB_PAT_PSW}\"
-                        else
-                            TOKEN=\"${GITHUB_PAT}\"
-                        fi
-                        AUTH_B64=\$(printf '%s' \"${GITHUB_PAT_USR:-x-access-token}:\$TOKEN\" | base64 | tr -d '\n')
-                        AUTH_HEADER=\"Authorization: Basic \$AUTH_B64\"
-                        
-                        FULL_URL=\"\$(normalize_url \"${FRONTEND_REPO_URL}\")\"
-                        echo \"Cloning frontend repo: \$FULL_URL\"
-                        
-                        if [ ! -d \"${FRONTEND_DIR}/.git\" ]; then
-                            mkdir -p \"${FRONTEND_DIR}\"
-                            echo \"Cloning repository from branch: \$BRANCH...\"
-                            git -c http.extraHeader=\"\$AUTH_HEADER\" clone -b \"\$BRANCH\" \"\$FULL_URL\" \"${FRONTEND_DIR}\"
-                        else
-                            echo \"Repository exists, pulling latest changes from branch: \$BRANCH...\"
-                            cd \"${FRONTEND_DIR}\"
-                            git config --global --add safe.directory \"${FRONTEND_DIR}\"
-                            git checkout \"\$BRANCH\" || git checkout -b \"\$BRANCH\" \"origin/\$BRANCH\"
-                            git -c http.extraHeader=\"\$AUTH_HEADER\" pull \"\$FULL_URL\" \"\$BRANCH\" || {
-                                echo \"Pull failed, trying to reset...\"
-                                git fetch --all
-                                git reset --hard \"origin/\$BRANCH\"
-                            }
-                        fi
-                        
-                        cd \"${FRONTEND_DIR}\"
-                        echo \"Current branch: \$(git branch --show-current)\"
-                        echo \"Latest commit:  \$(git rev-parse --short HEAD)\"
-                    "
-                '''
+            }
+        }
+        
+        stage('Clone Frontend Repo to EC2') {
+            when {
+                expression { return !params.DEPLOY_ONLY }
+            }
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+if [ -n "${GITHUB_PASS:-}" ]; then
+  TOKEN="$GITHUB_PASS"
+else
+  TOKEN="$GITHUB_PAT"
+fi
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+FULL_URL="$(normalize_url "$FRONTEND_REPO")"
+echo "Cloning frontend repo: $FULL_URL"
+
+if [ ! -d "$FRONTEND_DIR/.git" ]; then
+  mkdir -p "$FRONTEND_DIR"
+  echo "Cloning repository from branch: $BRANCH..."
+  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$FRONTEND_DIR"
+else
+  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
+  cd "$FRONTEND_DIR"
+  git config --global --add safe.directory "$FRONTEND_DIR"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+    echo "Pull failed, trying to reset..."
+    git fetch --all
+    git reset --hard "origin/$BRANCH"
+  }
+fi
+
+cd "$FRONTEND_DIR"
+echo "Current branch: $(git branch --show-current)"
+echo "Latest commit:  $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
             }
         }
         
@@ -134,97 +140,111 @@ pipeline {
                 expression { return !params.DEPLOY_ONLY }
             }
             steps {
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        cd \"${FRONTEND_DIR}\"
-                        
-                        # Add frontend linting/testing commands here
-                        echo \"Running frontend linting...\"
-                        # npm run lint || true
-                        
-                        echo \"Running frontend tests...\"
-                        # npm test || true
-                        
-                        echo \"✓ Lint and tests complete\"
-                    "
-                '''
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            FRONTEND_DIR='${FRONTEND_DIR}'
+                            
+                            cd \\${FRONTEND_DIR}
+                            
+                            # Add frontend linting/testing commands here
+                            echo 'Running frontend linting...'
+                            # npm run lint || true
+                            
+                            echo 'Running frontend tests...'
+                            # npm test || true
+                            
+                            echo '✓ Lint and tests complete'
+                        "
+                    '''
+                }
             }
         }
         
-        stage('Build Docker Image') {
+        stage('Build Docker Image on EC2') {
             when {
                 expression { return !params.DEPLOY_ONLY }
             }
             steps {
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        
-                        cd \"${FRONTEND_DIR}\"
-                        
-                        # Get git commit SHA for tagging
-                        GIT_COMMIT_SHA=\$(git rev-parse --short HEAD)
-                        
-                        # Point Docker to Minikube daemon
-                        eval \"\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\"
-                        
-                        # Build image
-                        IMAGE_TAG=\"${IMAGE_TAG:-build-${BUILD_NUMBER}-\$GIT_COMMIT_SHA}\"
-                        echo \"Building Docker image: ${DOCKER_IMAGE}:\$IMAGE_TAG\"
-                        
-                        docker build -t ${DOCKER_IMAGE}:\$IMAGE_TAG .
-                        docker tag ${DOCKER_IMAGE}:\$IMAGE_TAG ${DOCKER_IMAGE}:latest
-                        docker tag ${DOCKER_IMAGE}:\$IMAGE_TAG ${DOCKER_IMAGE}:build-${BUILD_NUMBER}
-                        docker tag ${DOCKER_IMAGE}:\$IMAGE_TAG ${DOCKER_IMAGE}:\$GIT_COMMIT_SHA
-                        
-                        echo \"✓ Docker image built successfully\"
-                        docker images | grep ${DOCKER_IMAGE}
-                        
-                        # Store image tag for deployment
-                        echo \"\$IMAGE_TAG\" > /tmp/frontend-image-tag.txt
-                    "
-                '''
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            FRONTEND_DIR='${FRONTEND_DIR}'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            DOCKER_IMAGE='${DOCKER_IMAGE}'
+                            BUILD_NUMBER='${BUILD_NUMBER}'
+                            IMAGE_TAG='${IMAGE_TAG}'
+                            
+                            cd \\${FRONTEND_DIR}
+                            
+                            # Get git commit SHA for tagging
+                            GIT_COMMIT_SHA=\\$(git rev-parse --short HEAD)
+                            
+                            # Point Docker to Minikube daemon
+                            eval \\\"\\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\\\"
+                            
+                            # Build image
+                            FINAL_TAG=\\\"\\${IMAGE_TAG:-build-${BUILD_NUMBER}-\\$GIT_COMMIT_SHA}\\\"
+                            echo \\\"Building Docker image: ${DOCKER_IMAGE}:\\$FINAL_TAG\\\"
+                            
+                            docker build -t ${DOCKER_IMAGE}:\\$FINAL_TAG .
+                            docker tag ${DOCKER_IMAGE}:\\$FINAL_TAG ${DOCKER_IMAGE}:latest
+                            docker tag ${DOCKER_IMAGE}:\\$FINAL_TAG ${DOCKER_IMAGE}:build-${BUILD_NUMBER}
+                            docker tag ${DOCKER_IMAGE}:\\$FINAL_TAG ${DOCKER_IMAGE}:\\$GIT_COMMIT_SHA
+                            
+                            echo \\\"✓ Docker image built successfully\\\"
+                            docker images | grep ${DOCKER_IMAGE}
+                            
+                            # Store image tag for deployment
+                            echo \\\"\\$FINAL_TAG\\\" > /tmp/frontend-image-tag.txt
+                        "
+                    '''
+                }
             }
         }
         
-        stage('Deploy to Kubernetes') {
+        stage('Deploy to Kubernetes on EC2') {
             when {
                 expression { return !params.BUILD_ONLY }
             }
             steps {
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        
-                        cd \"${WORKSPACE}\"
-                        
-                        # Get image tag
-                        if [ -f /tmp/frontend-image-tag.txt ]; then
-                            IMAGE_TAG=\$(cat /tmp/frontend-image-tag.txt)
-                        else
-                            IMAGE_TAG=\"latest\"
-                        fi
-                        
-                        # Ensure kubectl context is set
-                        kubectl config use-context ${MINIKUBE_PROFILE} || true
-                        
-                        # Apply Kubernetes manifests
-                        kubectl apply -f ${K8S_MANIFESTS}/configmap.yaml || true
-                        
-                        # Update image in deployment
-                        kubectl set image deployment/frontend-deployment frontend=${DOCKER_IMAGE}:\$IMAGE_TAG || \
-                        kubectl apply -f ${K8S_MANIFESTS}/deployment.yaml
-                        
-                        kubectl apply -f ${K8S_MANIFESTS}/service.yaml || true
-                        kubectl apply -f ${K8S_MANIFESTS}/hpa.yaml || true
-                        
-                        # Wait for rollout
-                        kubectl rollout status deployment/frontend-deployment --timeout=300s || true
-                        
-                        echo \"✓ Frontend deployed successfully\"
-                    "
-                '''
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            REPO_DIR='/home/ubuntu/aks_data_structures_devops'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            DOCKER_IMAGE='${DOCKER_IMAGE}'
+                            K8S_MANIFESTS='devops-infra/kubernetes/frontend'
+                            
+                            cd \\${REPO_DIR}
+                            
+                            # Get image tag
+                            if [ -f /tmp/frontend-image-tag.txt ]; then
+                                IMAGE_TAG=\\$(cat /tmp/frontend-image-tag.txt)
+                            else
+                                IMAGE_TAG='latest'
+                            fi
+                            
+                            # Ensure kubectl context is set
+                            kubectl config use-context ${MINIKUBE_PROFILE} || true
+                            
+                            # Apply Kubernetes manifests
+                            kubectl apply -f ${K8S_MANIFESTS}/configmap.yaml || true
+                            
+                            # Update image in deployment
+                            kubectl set image deployment/frontend-deployment frontend=${DOCKER_IMAGE}:\\$IMAGE_TAG || \\
+                            kubectl apply -f ${K8S_MANIFESTS}/deployment.yaml
+                            
+                            kubectl apply -f ${K8S_MANIFESTS}/service.yaml || true
+                            kubectl apply -f ${K8S_MANIFESTS}/hpa.yaml || true
+                            
+                            # Wait for rollout
+                            kubectl rollout status deployment/frontend-deployment --timeout=300s || true
+                            
+                            echo '✓ Frontend deployed successfully'
+                        "
+                    '''
+                }
             }
         }
         
@@ -233,37 +253,37 @@ pipeline {
                 expression { return !params.BUILD_ONLY }
             }
             steps {
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        
-                        # Wait for pods to be ready
-                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s || true
-                        
-                        # Get pod status
-                        echo \"\"
-                        echo \"=== Frontend Pods ===\"
-                        kubectl get pods -l app=frontend -o wide
-                        
-                        # Port-forward and test
-                        kubectl port-forward svc/frontend-service 8080:80 &
-                        PF_PID=\$!
-                        sleep 5
-                        
-                        # Test frontend health endpoint
-                        echo \"Testing frontend health endpoint...\"
-                        curl -f http://localhost:8080/health || echo \"Health check endpoint not available\"
-                        
-                        # Test main page
-                        echo \"Testing main page...\"
-                        curl -s http://localhost:8080/ | head -20 || echo \"Main page not available\"
-                        
-                        # Cleanup
-                        kill \$PF_PID 2>/dev/null || true
-                        
-                        echo \"✓ Health check passed\"
-                    "
-                '''
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            # Wait for pods to be ready
+                            kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s || true
+                            
+                            # Get pod status
+                            echo ''
+                            echo '=== Frontend Pods ==='
+                            kubectl get pods -l app=frontend -o wide
+                            
+                            # Port-forward and test
+                            kubectl port-forward svc/frontend-service 8080:80 &
+                            PF_PID=\\$!
+                            sleep 5
+                            
+                            # Test frontend health endpoint
+                            echo 'Testing frontend health endpoint...'
+                            curl -f http://localhost:8080/health || echo 'Health check endpoint not available'
+                            
+                            # Test main page
+                            echo 'Testing main page...'
+                            curl -s http://localhost:8080/ | head -20 || echo 'Main page not available'
+                            
+                            # Cleanup
+                            kill \\$PF_PID 2>/dev/null || true
+                            
+                            echo '✓ Health check passed'
+                        "
+                    '''
+                }
             }
         }
     }
