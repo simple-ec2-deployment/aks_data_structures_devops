@@ -209,45 +209,47 @@ pipeline {
         }
         
         stage('Build Docker Images on EC2') {
-            steps {
-                script {
-                    echo "==========================================="
-                    echo "Stage: Build Docker Images on EC2"
-                    echo "==========================================="
-                }
-                
-                parallel {
-                    stage('Build Frontend Image') {
-                        when {
-                            expression { return params.DEPLOY_FRONTEND }
+            parallel {
+                stage('Build Frontend Image') {
+                    when {
+                        expression { return params.DEPLOY_FRONTEND }
+                    }
+                    steps {
+                        script {
+                            echo "==========================================="
+                            echo "Building Frontend Docker image on EC2"
+                            echo "==========================================="
                         }
-                        steps {
-                            dir('frontend-code') {
-                                sh '''
-                                    echo "Building Frontend Docker image..."
-                                    docker build -t ui-service:latest .
-                                    docker tag ui-service:latest ui-service:build-${BUILD_NUMBER}
-                                    echo "✓ Frontend image built successfully"
-                                    docker images | grep ui-service
-                                '''
-                            }
+                        dir('frontend-code') {
+                            sh '''
+                                echo "Building Frontend Docker image..."
+                                docker build -t ui-service:latest .
+                                docker tag ui-service:latest ui-service:build-${BUILD_NUMBER}
+                                echo "✓ Frontend image built successfully"
+                                docker images | grep ui-service
+                            '''
                         }
                     }
-                    
-                    stage('Build Backend Image') {
-                        when {
-                            expression { return params.DEPLOY_BACKEND }
+                }
+                
+                stage('Build Backend Image') {
+                    when {
+                        expression { return params.DEPLOY_BACKEND }
+                    }
+                    steps {
+                        script {
+                            echo "==========================================="
+                            echo "Building Backend Docker image on EC2"
+                            echo "==========================================="
                         }
-                        steps {
-                            dir('backend-code') {
-                                sh '''
-                                    echo "Building Backend Docker image..."
-                                    docker build -t backend-service:latest .
-                                    docker tag backend-service:latest backend-service:build-${BUILD_NUMBER}
-                                    echo "✓ Backend image built successfully"
-                                    docker images | grep backend-service
-                                '''
-                            }
+                        dir('backend-code') {
+                            sh '''
+                                echo "Building Backend Docker image..."
+                                docker build -t backend-service:latest .
+                                docker tag backend-service:latest backend-service:build-${BUILD_NUMBER}
+                                echo "✓ Backend image built successfully"
+                                docker images | grep backend-service
+                            '''
                         }
                     }
                 }
