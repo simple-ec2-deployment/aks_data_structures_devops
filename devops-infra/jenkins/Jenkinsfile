@@ -1,6 +1,6 @@
 // Main Orchestration Pipeline
 // This pipeline orchestrates the deployment of all services
-// Runs directly on EC2 where Jenkins is installed
+// Uses SSH to connect to EC2 and run commands there
 
 pipeline {
     agent any
@@ -37,18 +37,31 @@ pipeline {
             defaultValue: 'minikube',
             description: 'Minikube profile name'
         )
+        choice(
+            name: 'TERRAFORM_WORKSPACE',
+            choices: ['local'],
+            description: 'Terraform workspace to use'
+        )
         booleanParam(
             name: 'DEPLOY_MONITORING',
             defaultValue: false,
             description: 'Deploy monitoring stack (Prometheus + Grafana)'
+        )
+        booleanParam(
+            name: 'ENABLE_PORT_FORWARD',
+            defaultValue: true,
+            description: 'Enable port-forwarding to expose application on EC2 public IP'
         )
     }
     
     environment {
         BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
         GITHUB_PAT = credentials('github-pat-token')
-        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        EC2_SSH_KEY = credentials('ec2-ssh-key')
         EC2_USER = 'ubuntu'
+        EC2_HOST = credentials('ec2-host-ip')
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        TERRAFORM_WORKSPACE = "${params.TERRAFORM_WORKSPACE}"
         REPO_DIR = '/home/ubuntu/aks_data_structures_devops'
         API_DIR = '/home/ubuntu/backend'
         FRONTEND_DIR = '/home/ubuntu/frontend'
@@ -75,322 +88,513 @@ pipeline {
             }
         }
         
-        stage('Ensure Minikube is Running') {
+        stage('Checkout & Clone to EC2') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Ensuring Minikube is running"
+                    echo "Stage: Cloning repository to EC2"
                     echo "=========================================="
                 }
                 
-                sh '''
-                    set -x  # Enable command tracing for better logs
-                    
-                    echo "Current user: $(whoami)"
-                    echo "Jenkins user groups: $(groups)"
-                    
-                    # Try to run as ubuntu user
-                    # If sudo requires password, we'll get a clear error
-                    echo "Attempting to run as ${EC2_USER} user..."
-                    
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        set -x  # Enable command tracing
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
                         
-                        echo '=========================================='
-                        echo 'Running as user: '\$(whoami)
-                        echo 'User groups: '\$(groups)
-                        echo '=========================================='
-                        
-                        # Ensure directories exist (ubuntu user should have permissions)
-                        mkdir -p \"\$HOME/.minikube\" \"\$HOME/.kube\" || true
-                        
-                        # Check Docker access
-                        echo 'Checking Docker access...'
-                        if docker version &>/dev/null; then
-                            echo '✓ Docker is accessible'
-                            docker version --short
-                        else
-                            echo '✗ Docker is not accessible'
-                            echo 'Checking docker group membership...'
-                            groups | grep docker || echo '⚠ User not in docker group'
-                            exit 1
-                        fi
-                        
-                        # Check if Minikube is running
-                        echo ''
-                        echo 'Checking Minikube status...'
-                        if minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running; then
-                            echo '✓ Minikube is already running'
-                            minikube status -p ${MINIKUBE_PROFILE}
-                        else
-                            echo 'Starting Minikube...'
-                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker || {
-                                echo '✗ Failed to start Minikube'
-                                echo 'Minikube logs:'
-                                minikube logs -p ${MINIKUBE_PROFILE} 2>&1 | tail -20 || true
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${params.INFRA_REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+FULL_URL="$(normalize_url "$REPO_URL")"
+echo "Repo (normalized): $FULL_URL"
+echo "Branch: $BRANCH"
+
+if [ -n "${GITHUB_PASS:-}" ]; then
+  TOKEN="$GITHUB_PASS"
+else
+  TOKEN="$GITHUB_PAT"
+fi
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR"
+  echo "Cloning repository from branch: $BRANCH..."
+  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
+else
+  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
+  cd "$REPO_DIR"
+  git config --global --add safe.directory "$REPO_DIR"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+    echo "Pull failed, trying to reset..."
+    git fetch --all
+    git reset --hard "origin/$BRANCH"
+  }
+fi
+
+cd "$REPO_DIR"
+echo "Current branch: $(git branch --show-current)"
+echo "Latest commit:  $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Clone Service Repos to EC2') {
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage: Cloning service repositories to EC2"
+                    echo "=========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' API_REPO='${params.API_REPO_URL}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+if [ -n "${GITHUB_PASS:-}" ]; then
+  TOKEN="$GITHUB_PASS"
+else
+  TOKEN="$GITHUB_PAT"
+fi
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+clone_or_update() {
+  local url="$1"; local dir="$2"
+  local full="$(normalize_url "$url")"
+  if [ ! -d "$dir/.git" ]; then
+    echo "Cloning $full to $dir (branch: $BRANCH) ..."
+    git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$full" "$dir"
+  else
+    echo "Updating $dir (branch: $BRANCH) ..."
+    cd "$dir"
+    git config --global --add safe.directory "$dir"
+    git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+    git -c http.extraHeader="$AUTH_HEADER" pull "$full" "$BRANCH" || { git fetch --all; git reset --hard "origin/$BRANCH"; }
+  fi
+}
+
+clone_or_update "$API_REPO" "$API_DIR"
+clone_or_update "$FRONTEND_REPO" "$FRONTEND_DIR"
+
+echo ''
+echo '=== Repo status ==='
+for repo in "$API_DIR" "$FRONTEND_DIR"; do
+  if [ -d "$repo/.git" ]; then
+    cd "$repo"
+    echo "[$repo]"
+    echo '  Branch:' $(git branch --show-current)
+    echo '  Commit:' $(git log -1 --oneline)
+  fi
+done
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Ensure Minikube is Running on EC2') {
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage: Ensuring Minikube is running on EC2"
+                    echo "=========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "EC2_USER='${EC2_USER}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+set -euo pipefail
+
+# Fix permissions from earlier sudo/root runs
+sudo mkdir -p "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
+sudo chown -R "${EC2_USER}:${EC2_USER}" "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
+
+# Ensure docker is usable (group + socket)
+if ! id -nG "${EC2_USER}" | tr ' ' '\n' | grep -qx docker; then
+  echo 'Adding user to docker group...'
+  sudo usermod -aG docker "${EC2_USER}"
+fi
+sudo systemctl enable docker >/dev/null 2>&1 || true
+sudo systemctl restart docker >/dev/null 2>&1 || true
+sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
+
+echo 'Docker socket check:'
+docker version || {
+  echo 'Failed to access docker socket even after docker group fixes.'
+  exit 1
+}
+
+# Check if Minikube is running
+if minikube status -p ${MINIKUBE_PROFILE} 2>/dev/null | grep -q Running; then
+  echo '✓ Minikube is already running'
+else
+  echo 'Starting Minikube...'
+  minikube start -p ${MINIKUBE_PROFILE} --driver=docker || {
+    echo 'Failed to start Minikube'
+    exit 1
+  }
+  echo '✓ Minikube started successfully'
+fi
+
+# Get Minikube IP
+MINIKUBE_IP="$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || true)"
+if [ -n "$MINIKUBE_IP" ]; then
+  echo "Minikube IP: $MINIKUBE_IP"
+fi
+
+# Verify kubectl access
+kubectl cluster-info || {
+  echo 'ERROR: Cannot access Kubernetes cluster'
+  exit 1
+}
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Docker Images on EC2') {
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage: Building Docker images on EC2"
+                    echo "=========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "REPO_DIR='${REPO_DIR}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+set -euo pipefail
+
+# Use infra repo as working dir
+cd "${REPO_DIR}"
+
+# Point Docker to Minikube
+eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
+
+build_if_exists() {
+  local tag="$1"; local path="$2"
+  if [ -f "$path/Dockerfile" ]; then
+    echo "Building $tag:latest from $path ..."
+    docker build -t "$tag:latest" "$path" || { echo "ERROR: Failed to build $tag"; exit 1; }
+    echo "✓ Successfully built $tag:latest"
+  else
+    echo "WARNING: Dockerfile not found at $path"
+  fi
+}
+
+# Data-structures services (from infra repo)
+build_if_exists stack-service "${REPO_DIR}/stack"
+build_if_exists linkedlist-service "${REPO_DIR}/linkedlist"
+build_if_exists graph-service "${REPO_DIR}/graph"
+
+# API service
+build_if_exists backend-service "${API_DIR}"
+
+# Frontend service
+build_if_exists ui-service "${FRONTEND_DIR}"
+
+echo ''
+echo 'All images built successfully:'
+docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy with Terraform on EC2') {
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage: Deploying with Terraform on EC2"
+                    echo "=========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            REPO_DIR='${REPO_DIR}'
+                            TERRAFORM_WORKSPACE='${TERRAFORM_WORKSPACE}'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            DEPLOY_MONITORING='${DEPLOY_MONITORING}'
+                            
+                            cd \\${REPO_DIR}/terraform/\\${TERRAFORM_WORKSPACE}
+                            
+                            # Ensure kubectl context is set to Minikube
+                            kubectl config use-context \\${MINIKUBE_PROFILE} || {
+                                echo 'WARNING: Could not set kubectl context, continuing...'
+                            }
+                            
+                            # Clean up old ingress controller deployment if it exists
+                            echo 'Cleaning up old ingress controller...'
+                            kubectl delete deployment ingress-nginx-controller -n ingress-nginx --ignore-not-found=true
+                            sleep 2
+                            
+                            echo 'Running terraform init...'
+                            terraform init || {
+                                echo 'ERROR: Terraform init failed'
                                 exit 1
                             }
-                            echo '✓ Minikube started successfully'
-                        fi
-                        
-                        # Get Minikube IP
-                        echo ''
-                        echo 'Getting Minikube IP...'
-                        MINIKUBE_IP=\$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || echo '')
-                        if [ -n \"\$MINIKUBE_IP\" ]; then
-                            echo \"✓ Minikube IP: \$MINIKUBE_IP\"
-                        else
-                            echo '⚠ Could not get Minikube IP'
-                        fi
-                        
-                        # Verify kubectl access
-                        echo ''
-                        echo 'Verifying kubectl access...'
-                        kubectl cluster-info || {
-                            echo '✗ ERROR: Cannot access Kubernetes cluster'
-                            echo 'kubectl config:'
-                            kubectl config view || true
-                            exit 1
-                        }
-                        echo '✓ kubectl is working'
-                        
-                        echo ''
-                        echo '=========================================='
-                        echo '✓ All prerequisites verified!'
-                        echo '=========================================='
-                    "
-                '''
+                            echo '✓ Terraform initialized'
+                            
+                            echo ''
+                            echo 'Running terraform apply...'
+                            terraform apply -auto-approve || {
+                                echo 'ERROR: Terraform apply failed'
+                                exit 1
+                            }
+                            echo '✓ Terraform apply completed successfully'
+                        "
+                    '''
+                }
             }
         }
         
-        stage('Clone Service Repos') {
+        stage('Verify Deployment on EC2') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "Stage: Cloning service repositories"
+                    echo "Stage: Verifying deployment on EC2"
                     echo "=========================================="
                 }
                 
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        : \"\${BRANCH:=${BRANCH_NAME}}\"
-                        
-                        normalize_url() {
-                            local input=\"\$1\"
-                            if echo \"\$input\" | grep -qiE '^git@github.com:'; then
-                                input=\$(echo \"\$input\" | sed -E 's|^git@github.com:|https://github.com/|')
-                            elif echo \"\$input\" | grep -qiE '^ssh://git@github.com/'; then
-                                input=\$(echo \"\$input\" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-                            elif ! echo \"\$input\" | grep -qiE '^https?://'; then
-                                input=\"https://\$input\"
-                            fi
-                            echo \"\$input\"
-                        }
-                        
-                        if [ -n \"${GITHUB_PAT_PSW:-}\" ]; then
-                            TOKEN=\"${GITHUB_PAT_PSW}\"
-                        else
-                            TOKEN=\"${GITHUB_PAT}\"
-                        fi
-                        AUTH_B64=\$(printf '%s' \"${GITHUB_PAT_USR:-x-access-token}:\$TOKEN\" | base64 | tr -d '\n')
-                        AUTH_HEADER=\"Authorization: Basic \$AUTH_B64\"
-                        
-                        clone_or_update() {
-                            local url=\"\$1\"; local dir=\"\$2\"
-                            local full=\"\$(normalize_url \"\$url\")\"
-                            if [ ! -d \"\$dir/.git\" ]; then
-                                echo \"Cloning \$full to \$dir (branch: \$BRANCH) ...\"
-                                git -c http.extraHeader=\"\$AUTH_HEADER\" clone -b \"\$BRANCH\" \"\$full\" \"\$dir\"
-                            else
-                                echo \"Updating \$dir (branch: \$BRANCH) ...\"
-                                cd \"\$dir\"
-                                git config --global --add safe.directory \"\$dir\"
-                                git checkout \"\$BRANCH\" || git checkout -b \"\$BRANCH\" \"origin/\$BRANCH\"
-                                git -c http.extraHeader=\"\$AUTH_HEADER\" pull \"\$full\" \"\$BRANCH\" || { git fetch --all; git reset --hard \"origin/\$BRANCH\"; }
-                            fi
-                        }
-                        
-                        clone_or_update \"${API_REPO_URL}\" \"${API_DIR}\"
-                        clone_or_update \"${FRONTEND_REPO_URL}\" \"${FRONTEND_DIR}\"
-                        
-                        echo ''
-                        echo '=== Repo status ==='
-                        for repo in \"${API_DIR}\" \"${FRONTEND_DIR}\"; do
-                            if [ -d \"\$repo/.git\" ]; then
-                                cd \"\$repo\"
-                                echo \"[\$repo]\"
-                                echo '  Branch:' \$(git branch --show-current)
-                                echo '  Commit:' \$(git log -1 --oneline)
-                            fi
-                        done
-                    "
-                '''
-            }
-        }
-        
-        stage('Build Docker Images') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage: Building Docker images"
-                    echo "=========================================="
-                }
-                
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        
-                        cd \"${REPO_DIR}\"
-                        
-                        # Point Docker to Minikube
-                        eval \"\$(minikube -p ${MINIKUBE_PROFILE} docker-env)\"
-                        
-                        build_if_exists() {
-                            local tag=\"\$1\"; local path=\"\$2\"
-                            if [ -f \"\$path/Dockerfile\" ]; then
-                                echo \"Building \$tag:latest from \$path ...\"
-                                docker build -t \"\$tag:latest\" \"\$path\" || { echo \"ERROR: Failed to build \$tag\"; exit 1; }
-                                echo \"✓ Successfully built \$tag:latest\"
-                            else
-                                echo \"WARNING: Dockerfile not found at \$path\"
-                            fi
-                        }
-                        
-                        # Data-structures services (from infra repo)
-                        build_if_exists stack-service \"${REPO_DIR}/stack\"
-                        build_if_exists linkedlist-service \"${REPO_DIR}/linkedlist\"
-                        build_if_exists graph-service \"${REPO_DIR}/graph\"
-                        
-                        # API service
-                        build_if_exists backend-service \"${API_DIR}\"
-                        
-                        # Frontend service
-                        build_if_exists ui-service \"${FRONTEND_DIR}\"
-                        
-                        echo ''
-                        echo 'All images built successfully:'
-                        docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
-                    "
-                '''
-            }
-        }
-        
-        stage('Deploy to Kubernetes') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage: Deploying to Kubernetes"
-                    echo "=========================================="
-                }
-                
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        
-                        cd \"${REPO_DIR}\"
-                        
-                        # Ensure kubectl context is set to Minikube
-                        kubectl config use-context ${MINIKUBE_PROFILE} || {
-                            echo 'WARNING: Could not set kubectl context, continuing...'
-                        }
-                        
-                        # Make deployment script executable
-                        chmod +x devops-infra/scripts/deploy-ec2.sh
-                        
-                        # Run deployment script
-                        echo 'Running deployment script...'
-                        ./devops-infra/scripts/deploy-ec2.sh dev ${DEPLOY_MONITORING} || {
-                            echo 'ERROR: Deployment script failed'
-                            exit 1
-                        }
-                        
-                        echo '✓ Deployment completed successfully'
-                    "
-                '''
-            }
-        }
-        
-        stage('Verify Deployment') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage: Verifying deployment"
-                    echo "=========================================="
-                }
-                
-                sh '''
-                    sudo -u ${EC2_USER} -H bash -c "
-                        set -euo pipefail
-                        
-                        echo 'Waiting for pods to be ready...'
-                        MAX_RETRIES=40
-                        RETRY_COUNT=0
-                        
-                        while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
-                            PODS=\$(kubectl get pods --no-headers 2>/dev/null)
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            REPO_DIR='${REPO_DIR}'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            API_DIR='${API_DIR}'
+                            FRONTEND_DIR='${FRONTEND_DIR}'
                             
-                            if [ -z \"\$PODS\" ]; then
-                                echo 'No pods found yet, waiting...'
-                                sleep 5
-                                RETRY_COUNT=\$((RETRY_COUNT + 1))
-                                continue
-                            fi
+                            # Verify Git branch
+                            echo '=========================================='
+                            echo 'Git Repository Status:'
+                            echo '=========================================='
+                            cd \\${REPO_DIR}
+                            echo 'Infra repo:'
+                            echo '  Branch:' \\$(git branch --show-current)
+                            echo '  Commit:' \\$(git log -1 --oneline)
+                            echo ''
                             
-                            NOT_READY=\$(echo \"\$PODS\" | grep -v 'Running' | grep -v 'Completed' | wc -l | tr -d ' ')
+                            for repo in \"\\$API_DIR\" \"\\$FRONTEND_DIR\"; do
+                              if [ -d \"\\$repo/.git\" ]; then
+                                cd \"\\$repo\"
+                                echo \"[\\$repo]\"
+                                echo '  Branch:' \\$(git branch --show-current)
+                                echo '  Commit:' \\$(git log -1 --oneline)
+                              else
+                                echo \"[\\$repo] not cloned\"
+                              fi
+                            done
+                            echo ''
                             
-                            if [ \"\$NOT_READY\" -eq 0 ] && [ -n \"\$PODS\" ]; then
-                                echo '✓ All pods are Running!'
-                                break
-                            fi
+                            # Wait for pods to be ready
+                            echo 'Waiting for pods to be ready...'
+                            MAX_RETRIES=40
+                            RETRY_COUNT=0
                             
-                            if [ \$((RETRY_COUNT % 5)) -eq 0 ]; then
-                                echo \"Still waiting for pods... (attempt \$RETRY_COUNT/\$MAX_RETRIES)\"
+                            while [ \\$RETRY_COUNT -lt \\$MAX_RETRIES ]; do
+                                PODS=\\$(kubectl get pods --no-headers 2>/dev/null)
+                                
+                                if [ -z \\"\\$PODS\\" ]; then
+                                    echo 'No pods found yet, waiting...'
+                                    sleep 5
+                                    RETRY_COUNT=\\$((RETRY_COUNT + 1))
+                                    continue
+                                fi
+                                
+                                NOT_READY=\\$(echo \\"\\$PODS\\" | grep -v 'Running' | grep -v 'Completed' | wc -l | tr -d ' ')
+                                
+                                if [ \\"\\$NOT_READY\\" -eq 0 ] && [ -n \\"\\$PODS\\" ]; then
+                                    echo '✓ All pods are Running!'
+                                    break
+                                fi
+                                
+                                if [ \\$((RETRY_COUNT % 5)) -eq 0 ]; then
+                                    echo \\"Still waiting for pods... (attempt \\$RETRY_COUNT/\\$MAX_RETRIES)\\"
+                                    kubectl get pods || true
+                                fi
+                                
+                                sleep 3
+                                RETRY_COUNT=\\$((RETRY_COUNT + 1))
+                            done
+                            
+                            if [ \\$RETRY_COUNT -ge \\$MAX_RETRIES ]; then
+                                echo 'WARNING: Timeout waiting for pods. Current status:'
                                 kubectl get pods || true
                             fi
                             
+                            echo ''
+                            echo '=========================================='
+                            echo 'Kubernetes Resources Status:'
+                            echo '=========================================='
+                            
+                            echo ''
+                            echo '=== Pods (default namespace) ==='
+                            kubectl get pods -o wide || true
+                            
+                            echo ''
+                            echo '=== Pods (ingress-nginx namespace) ==='
+                            kubectl get pods -n ingress-nginx -o wide || true
+                            
+                            echo ''
+                            echo '=== Services ==='
+                            kubectl get services || true
+                            
+                            echo ''
+                            echo '=== Deployments ==='
+                            kubectl get deployments || true
+                            
+                            echo ''
+                            echo '=== Ingress ==='
+                            kubectl get ingress || true
+                            
+                            # Get access URLs
+                            MINIKUBE_IP=\\$(minikube ip -p \\${MINIKUBE_PROFILE} 2>/dev/null || echo 'unknown')
+                            
+                            echo ''
+                            echo '=========================================='
+                            echo 'Access URLs:'
+                            echo '=========================================='
+                            echo \\"Internal (Minikube): http://\\${MINIKUBE_IP}:32080/\\"
+                            echo \\"External (EC2):      http://${EC2_HOST}:32080/\\"
+                            echo ''
+                        "
+                    '''
+                }
+            }
+        }
+        
+        stage('Optional Port-Forward') {
+            when {
+                expression { 
+                    return params.ENABLE_PORT_FORWARD.toBoolean()
+                }
+            }
+            steps {
+                script {
+                    echo "=========================================="
+                    echo "Stage: Setting up port-forward (Optional)"
+                    echo "=========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            echo 'Port-forward is enabled. Setting up port-forward...'
+                            
+                            # Kill existing port-forwards
+                            pkill -f 'kubectl port-forward' || true
+                            sleep 1
+                            
+                            # Get kubectl path
+                            KUBECTL_PATH=\\$(which kubectl)
+                            
+                            # Create a systemd service for persistent port-forward
+                            sudo tee /etc/systemd/system/k8s-port-forward.service > /dev/null << EOF
+[Unit]
+Description=Kubernetes Port Forward for Ingress
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+Environment=\"KUBECONFIG=/home/ubuntu/.kube/config\"
+ExecStart=\\${KUBECTL_PATH} port-forward -n ingress-nginx svc/ingress-nginx-controller 32080:80 --address=0.0.0.0
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/ingress-port-forward.log
+StandardError=append:/tmp/ingress-port-forward.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                            
+                            # Reload systemd and start the service
+                            sudo systemctl daemon-reload
+                            sudo systemctl enable k8s-port-forward.service
+                            sudo systemctl restart k8s-port-forward.service
+                            
+                            # Wait for service to start
                             sleep 3
-                            RETRY_COUNT=\$((RETRY_COUNT + 1))
-                        done
-                        
-                        if [ \$RETRY_COUNT -ge \$MAX_RETRIES ]; then
-                            echo 'WARNING: Timeout waiting for pods. Current status:'
-                            kubectl get pods || true
-                        fi
-                        
-                        echo ''
-                        echo '=========================================='
-                        echo 'Kubernetes Resources Status:'
-                        echo '=========================================='
-                        
-                        echo ''
-                        echo '=== Pods ==='
-                        kubectl get pods -o wide || true
-                        
-                        echo ''
-                        echo '=== Services ==='
-                        kubectl get services || true
-                        
-                        echo ''
-                        echo '=== Deployments ==='
-                        kubectl get deployments || true
-                        
-                        echo ''
-                        echo '=== Ingress ==='
-                        kubectl get ingress || true
-                        
-                        # Get access URLs
-                        MINIKUBE_IP=\$(minikube ip -p ${MINIKUBE_PROFILE} 2>/dev/null || echo 'unknown')
-                        
-                        echo ''
-                        echo '=========================================='
-                        echo 'Access URLs:'
-                        echo '=========================================='
-                        echo \"Internal (Minikube): http://\$MINIKUBE_IP:32080/\"
-                        echo ''
-                    "
-                '''
+                            
+                            # Verify service is running
+                            if sudo systemctl is-active --quiet k8s-port-forward.service; then
+                                echo '✓ Port-forward service is running'
+                                sudo systemctl status k8s-port-forward.service --no-pager -l
+                            else
+                                echo '✗ Port-forward service failed to start'
+                                sudo systemctl status k8s-port-forward.service --no-pager -l
+                            fi
+                            
+                            # Check if port is listening
+                            sleep 2
+                            if netstat -tuln | grep ':32080' > /dev/null 2>&1; then
+                                echo '✓ Port 32080 is listening'
+                            else
+                                echo '⚠ Port 32080 is not listening yet'
+                            fi
+                            
+                            # Test local connection
+                            if curl -s -o /dev/null -w '%{http_code}' http://localhost:32080 | grep -q '200'; then
+                                echo '✓ Local connection test successful'
+                            else
+                                echo '⚠ Local connection test failed (may need a moment to start)'
+                            fi
+                            
+                            echo ''
+                            echo '=========================================='
+                            echo 'Port-Forward Status:'
+                            echo '=========================================='
+                            echo 'Service: k8s-port-forward.service'
+                            echo 'Log file: /tmp/ingress-port-forward.log'
+                            echo ''
+                            echo 'Application is now accessible at:'
+                            echo '  - http://${EC2_HOST}:32080/'
+                            echo ''
+                            echo 'To manage the service:'
+                            echo '  sudo systemctl status k8s-port-forward'
+                            echo '  sudo systemctl restart k8s-port-forward'
+                            echo '  sudo systemctl stop k8s-port-forward'
+                            echo '  tail -f /tmp/ingress-port-forward.log'
+                        " || true
+                    '''
+                }
             }
         }
     }
@@ -401,9 +605,11 @@ pipeline {
             ==========================================
             ✓ Pipeline completed successfully!
             ==========================================
-            Branch: ${params.BRANCH_NAME}
-            Minikube Profile: ${params.MINIKUBE_PROFILE}
-            Monitoring: ${params.DEPLOY_MONITORING}
+            Application deployed on EC2 instance: ${EC2_HOST}
+            Access the application at: http://${EC2_HOST}:32080/
+            
+            Port-forward service is running as systemd service
+            To check status: ssh ${EC2_USER}@${EC2_HOST} 'sudo systemctl status k8s-port-forward'
             """
         }
         always {
@@ -411,6 +617,14 @@ pipeline {
             ==========================================
             Pipeline execution completed.
             ==========================================
+            
+            Deployment Summary:
+              - Branch: ${params.BRANCH_NAME}
+              - Minikube Profile: ${params.MINIKUBE_PROFILE}
+              - Terraform Workspace: ${params.TERRAFORM_WORKSPACE}
+              - Port Forward: ${params.ENABLE_PORT_FORWARD}
+            
+            Application URL: http://${EC2_HOST}:32080/
             """
         }
     }
