@@ -134,12 +134,8 @@ pipeline {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
                         
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${params.INFRA_REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' bash -s" <<'SCRIPT'
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${params.INFRA_REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' bash -s" <<'ENDSSH'
 set -euo pipefail
-: "${BRANCH:=main}"
-set -euo pipefail
-: "${BRANCH:=main}"
 
 normalize_url() {
   local input="$1"
@@ -181,7 +177,7 @@ fi
 cd "$REPO_DIR"
 echo "Current branch: $(git branch --show-current)"
 echo "Latest commit:  $(git rev-parse --short HEAD)"
-SCRIPT
+ENDSSH
                     '''
                 }
             }
