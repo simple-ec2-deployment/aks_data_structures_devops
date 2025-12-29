@@ -127,21 +127,30 @@ pipeline {
                     echo ""
                     echo "Checking Minikube status..."
                     MINIKUBE_RUNNING=false
-                    if minikube status 2>/dev/null | grep -q "Running"; then
+                    MINIKUBE_STATUS_OUTPUT=$(minikube status 2>&1)
+                    if echo "$MINIKUBE_STATUS_OUTPUT" | grep -q "Running"; then
                         echo "✓ Minikube is already running"
                         MINIKUBE_RUNNING=true
                         # Configure Docker to use Minikube's daemon
                         echo "Configuring Docker to use Minikube daemon..."
-                        eval $(minikube docker-env 2>/dev/null) || true
-                        # Verify Docker access through Minikube
-                        if docker ps &> /dev/null; then
-                            echo "✓ Docker accessible via Minikube"
+                        MINIKUBE_DOCKER_ENV=$(minikube docker-env 2>&1)
+                        if [ $? -eq 0 ]; then
+                            eval "$MINIKUBE_DOCKER_ENV"
+                            # Verify Docker access through Minikube
+                            if docker ps &> /dev/null; then
+                                echo "✓ Docker accessible via Minikube"
+                            else
+                                echo "⚠ Docker may not be accessible, but Minikube is running"
+                            fi
+                        else
+                            echo "⚠ Could not configure Minikube Docker env, but continuing..."
                         fi
                     else
                         # Minikube is not running, check Docker permissions
                         echo "⚠ Minikube is not running"
                         echo "Checking Docker permissions..."
-                        if docker ps &> /dev/null; then
+                        # Test Docker access explicitly
+                        if docker ps > /dev/null 2>&1; then
                             echo "✓ Docker permissions OK"
                             echo "Starting Minikube..."
                             if minikube start --driver=docker 2>&1; then
@@ -151,13 +160,27 @@ pipeline {
                             else
                                 echo "✗ Failed to start Minikube"
                                 echo ""
-                                echo "Fix: SSH into EC2 and run: sudo usermod -aG docker jenkins && sudo systemctl restart jenkins"
+                                echo "==========================================="
+                                echo "REQUIRED FIX - Run this on EC2:"
+                                echo "==========================================="
+                                echo "sudo usermod -aG docker jenkins"
+                                echo "sudo systemctl restart jenkins"
+                                echo ""
+                                echo "Wait 10 seconds, then run pipeline again."
+                                echo "==========================================="
                                 exit 1
                             fi
                         else
                             echo "✗ Jenkins user cannot access Docker"
                             echo ""
-                            echo "Fix: SSH into EC2 and run: sudo usermod -aG docker jenkins && sudo systemctl restart jenkins"
+                            echo "==========================================="
+                            echo "REQUIRED FIX - Run this on EC2:"
+                            echo "==========================================="
+                            echo "sudo usermod -aG docker jenkins"
+                            echo "sudo systemctl restart jenkins"
+                            echo ""
+                            echo "Wait 10 seconds, then run pipeline again."
+                            echo "==========================================="
                             exit 1
                         fi
                     fi
