@@ -407,7 +407,7 @@ SCRIPT
                             TERRAFORM_WORKSPACE='${TERRAFORM_WORKSPACE}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
                             
-                            cd \\${REPO_DIR}/terraform/\\${TERRAFORM_WORKSPACE}
+                            cd \\${REPO_DIR}/devops-infra/terraform/environments/\\${TERRAFORM_WORKSPACE}
                             
                             # Ensure kubectl context is set to Minikube
                             kubectl config use-context \\${MINIKUBE_PROFILE} || {
