@@ -37,6 +37,7 @@ pipeline {
         EC2_HOST = credentials('ec2-host-ip')
         FRONTEND_DIR = '/home/ubuntu/frontend'
         REPO_DIR = '/home/ubuntu/aks_data_structures_devops'
+        FRONTEND_REPO_URL = "${params.FRONTEND_REPO_URL}"
         MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
     }
     
@@ -53,7 +54,7 @@ pipeline {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' FRONTEND_REPO='${params.FRONTEND_REPO_URL}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' FRONTEND_REPO='${FRONTEND_REPO_URL}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 : "${BRANCH:=main}"
 
