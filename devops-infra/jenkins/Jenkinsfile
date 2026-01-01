@@ -49,7 +49,8 @@ pipeline {
         )
         booleanParam(
             name: 'USE_CHILD_PIPELINES',
-            defaultValue: false,
+            // Default to true so first run prefers the child pipelines; also guards if param is missing
+            defaultValue: true,
             description: 'Use separate child pipelines for services (backend, frontend, data-structures)'
         )
     }
@@ -287,7 +288,7 @@ SCRIPT
         
         stage('Build & Deploy Services') {
             when {
-                expression { return !params.USE_CHILD_PIPELINES }
+                expression { return !(params.USE_CHILD_PIPELINES == null ? true : params.USE_CHILD_PIPELINES) }
             }
             steps {
                 script {
@@ -334,7 +335,7 @@ SCRIPT
         
         stage('Call Child Pipelines') {
             when {
-                expression { return params.USE_CHILD_PIPELINES }
+                expression { return (params.USE_CHILD_PIPELINES == null ? true : params.USE_CHILD_PIPELINES) }
             }
             parallel {
                 stage('Deploy Data Structures') {
