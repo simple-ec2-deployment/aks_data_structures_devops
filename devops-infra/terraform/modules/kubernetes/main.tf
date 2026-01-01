@@ -231,7 +231,11 @@ resource "kubectl_manifest" "grafana_deployment" {
   for_each          = data.kubectl_file_documents.grafana_deployment.manifests
   yaml_body         = each.value
   override_namespace = local.namespace
-  depends_on = [kubectl_manifest.prometheus_service]
+  depends_on = [
+    kubectl_manifest.prometheus_service,
+    kubectl_manifest.grafana_configmaps,
+    kubectl_manifest.grafana_dashboards
+  ]
 }
 
 data "kubectl_file_documents" "grafana_service" {
