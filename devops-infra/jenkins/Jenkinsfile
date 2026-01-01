@@ -569,24 +569,25 @@ SCRIPT
                 
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
-                            set -euo pipefail
-                            set -x
-                            echo 'Port-forward is enabled. Setting up port-forward...'
-                            
-                            # Kill existing port-forwards
-                            sudo pkill -f 'kubectl port-forward' || true
-                            sleep 1
-                            
-                            # Get kubectl path (fail fast if missing)
-                            KUBECTL_PATH=\\$(command -v kubectl || true)
-                            if [ -z "\\${KUBECTL_PATH}" ]; then
-                              echo "ERROR: kubectl not found in PATH"
-                              exit 1
-                            fi
-                            
-                            # Create a systemd service for persistent port-forward
-                            sudo tee /etc/systemd/system/k8s-port-forward.service > /dev/null << EOF
+cat <<'REMOTE' | ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} bash
+set -euo pipefail
+set -x
+
+echo 'Port-forward is enabled. Setting up port-forward...'
+
+# Kill existing port-forwards
+sudo pkill -f 'kubectl port-forward' || true
+sleep 1
+
+# Get kubectl path (fail fast if missing)
+KUBECTL_PATH=$(command -v kubectl || true)
+if [ -z "${KUBECTL_PATH}" ]; then
+  echo "ERROR: kubectl not found in PATH"
+  exit 1
+fi
+
+# Create a systemd service for persistent port-forward
+sudo tee /etc/systemd/system/k8s-port-forward.service > /dev/null << EOF
 [Unit]
 Description=Kubernetes Port Forward for Ingress
 After=network.target
@@ -594,10 +595,10 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu
-Environment=\"KUBECONFIG=/home/ubuntu/.kube/config\"
+Environment="KUBECONFIG=/home/ubuntu/.kube/config"
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-ExecStart=\\${KUBECTL_PATH} port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
+ExecStart=${KUBECTL_PATH} port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
 Restart=always
 RestartSec=5
 StandardOutput=append:/tmp/ingress-port-forward.log
@@ -605,70 +606,53 @@ StandardError=append:/tmp/ingress-port-forward.log
 [Install]
 WantedBy=multi-user.target
 EOF
-                            
-                            # Reload systemd and start the service
-                            sudo systemctl daemon-reload
-                            sudo systemctl enable k8s-port-forward.service
-                            if ! sudo systemctl restart k8s-port-forward.service; then
-                              echo '✗ Failed to restart k8s-port-forward; showing status/logs'
-                              sudo systemctl status k8s-port-forward.service --no-pager -l || true
-                              sudo journalctl -u k8s-port-forward --no-pager -n 80 || true
-                              exit 1
-                            fi
-                            
-                            # Verify service is active; otherwise show logs and fail
-                            if ! sudo systemctl is-active --quiet k8s-port-forward.service; then
-                              echo "✗ Port-forward service failed to start; showing logs..."
-                              sudo systemctl status k8s-port-forward.service --no-pager -l || true
-                              sudo journalctl -u k8s-port-forward --no-pager -n 80 || true
-                              exit 1
-                            fi
-                            
-                            # Wait for service to settle
-                            sleep 3
-                            
-                            # Verify service is running and port is listening
-                            if sudo systemctl is-active --quiet k8s-port-forward.service; then
-                                echo '✓ Port-forward service is running'
-                                sudo systemctl status k8s-port-forward.service --no-pager -l
-                                sudo netstat -tuln | grep ':80' || { echo '⚠ Port 80 not listening'; exit 1; }
-                            else
-                                echo '✗ Port-forward service failed to start'
-                                sudo systemctl status k8s-port-forward.service --no-pager -l
-                                exit 1
-                            fi
-                            
-                            # Check if port is listening
-                            sleep 2
-                            if netstat -tuln | grep ':80' > /dev/null 2>&1; then
-                                echo '✓ Port 80 is listening'
-                            else
-                                echo '⚠ Port 80 is not listening yet'
-                            fi
-                            
-                            # Test local connection
-                            if curl -s -o /dev/null -w '%{http_code}' http://localhost:80 | grep -q '200'; then
-                                echo '✓ Local connection test successful'
-                            else
-                                echo '⚠ Local connection test failed (may need a moment to start)'
-                            fi
-                            
-                            echo ''
-                            echo '=========================================='
-                            echo 'Port-Forward Status:'
-                            echo '=========================================='
-                            echo 'Service: k8s-port-forward.service'
-                            echo 'Log file: /tmp/ingress-port-forward.log'
-                            echo ''
-                            echo 'Application is now accessible at:'
-                            echo '  - http://${EC2_HOST}:80/'
-                            echo ''
-                            echo 'To manage the service:'
-                            echo '  sudo systemctl status k8s-port-forward'
-                            echo '  sudo systemctl restart k8s-port-forward'
-                            echo '  sudo systemctl stop k8s-port-forward'
-                            echo '  tail -f /tmp/ingress-port-forward.log'
-                        " || true
+
+# Reload systemd and start the service
+sudo systemctl daemon-reload
+sudo systemctl enable k8s-port-forward.service
+sudo systemctl restart k8s-port-forward.service
+
+# Verify service, port, and HTTP with retries
+success=0
+for i in $(seq 1 10); do
+  if sudo systemctl is-active --quiet k8s-port-forward.service \
+     && sudo netstat -tuln | grep ':80' >/dev/null 2>&1 \
+     && curl -s -o /dev/null -w '%{http_code}' http://localhost:80 | grep -q '200'; then
+    success=1
+    break
+  fi
+  echo "Waiting for port-forward to become ready (attempt ${i}/10)..."
+  sleep 3
+done
+
+if [ "${success}" -ne 1 ]; then
+  echo "✗ Port-forward did not become ready; showing diagnostics..."
+  sudo systemctl status k8s-port-forward.service --no-pager -l || true
+  sudo journalctl -u k8s-port-forward --no-pager -n 120 || true
+  sudo netstat -tuln || true
+  exit 1
+else
+  echo '✓ Port-forward is active and responding on port 80'
+  sudo systemctl status k8s-port-forward.service --no-pager -l || true
+  sudo journalctl -u k8s-port-forward --no-pager -n 40 || true
+fi
+
+echo ''
+echo '=========================================='
+echo 'Port-Forward Status:'
+echo '=========================================='
+echo 'Service: k8s-port-forward.service'
+echo 'Log file: /tmp/ingress-port-forward.log'
+echo ''
+echo 'Application is now accessible at:'
+echo '  - http://${EC2_HOST}:80/'
+echo ''
+echo 'To manage the service:'
+echo '  sudo systemctl status k8s-port-forward'
+echo '  sudo systemctl restart k8s-port-forward'
+echo '  sudo systemctl stop k8s-port-forward'
+echo '  tail -f /tmp/ingress-port-forward.log'
+REMOTE
                     '''
                 }
             }
