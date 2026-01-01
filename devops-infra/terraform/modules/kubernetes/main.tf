@@ -128,6 +128,133 @@ resource "kubectl_manifest" "graph" {
   override_namespace = local.namespace
 }
 
+# Database manifests
+data "kubectl_file_documents" "database_statefulset" {
+  content = file("${var.k8s_dir}/database/statefulset.yaml")
+}
+
+resource "kubectl_manifest" "database_statefulset" {
+  for_each          = data.kubectl_file_documents.database_statefulset.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+data "kubectl_file_documents" "database_service" {
+  content = file("${var.k8s_dir}/database/service.yaml")
+}
+
+resource "kubectl_manifest" "database_service" {
+  for_each          = data.kubectl_file_documents.database_service.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+  depends_on = [kubectl_manifest.database_statefulset]
+}
+
+data "kubectl_file_documents" "database_secret" {
+  content = file("${var.k8s_dir}/database/secret.yaml")
+}
+
+resource "kubectl_manifest" "database_secret" {
+  for_each          = data.kubectl_file_documents.database_secret.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+data "kubectl_file_documents" "database_pvc" {
+  content = file("${var.k8s_dir}/database/pvc.yaml")
+}
+
+resource "kubectl_manifest" "database_pvc" {
+  for_each          = data.kubectl_file_documents.database_pvc.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+# Monitoring - Prometheus
+data "kubectl_file_documents" "prometheus" {
+  content = file("${var.k8s_dir}/monitoring/prometheus/deployment.yaml")
+}
+
+resource "kubectl_manifest" "prometheus_deployment" {
+  for_each          = data.kubectl_file_documents.prometheus.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+data "kubectl_file_documents" "prometheus_service" {
+  content = file("${var.k8s_dir}/monitoring/prometheus/service.yaml")
+}
+
+resource "kubectl_manifest" "prometheus_service" {
+  for_each          = data.kubectl_file_documents.prometheus_service.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+  depends_on = [kubectl_manifest.prometheus_deployment]
+}
+
+data "kubectl_file_documents" "prometheus_config" {
+  content = file("${var.k8s_dir}/monitoring/prometheus/configmap.yaml")
+}
+
+resource "kubectl_manifest" "prometheus_config" {
+  for_each          = data.kubectl_file_documents.prometheus_config.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+data "kubectl_file_documents" "prometheus_clusterrole" {
+  content = file("${var.k8s_dir}/monitoring/prometheus/clusterrole.yaml")
+}
+
+resource "kubectl_manifest" "prometheus_clusterrole" {
+  for_each          = data.kubectl_file_documents.prometheus_clusterrole.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+# Monitoring - Grafana
+data "kubectl_file_documents" "grafana_deployment" {
+  content = file("${var.k8s_dir}/monitoring/grafana/deployment.yaml")
+}
+
+resource "kubectl_manifest" "grafana_deployment" {
+  for_each          = data.kubectl_file_documents.grafana_deployment.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+  depends_on = [kubectl_manifest.prometheus_service]
+}
+
+data "kubectl_file_documents" "grafana_service" {
+  content = file("${var.k8s_dir}/monitoring/grafana/service.yaml")
+}
+
+resource "kubectl_manifest" "grafana_service" {
+  for_each          = data.kubectl_file_documents.grafana_service.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+  depends_on = [kubectl_manifest.grafana_deployment]
+}
+
+data "kubectl_file_documents" "grafana_configmaps" {
+  content = file("${var.k8s_dir}/monitoring/grafana/configmap.yaml")
+}
+
+resource "kubectl_manifest" "grafana_configmaps" {
+  for_each          = data.kubectl_file_documents.grafana_configmaps.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
+data "kubectl_file_documents" "grafana_dashboards" {
+  content = file("${var.k8s_dir}/monitoring/grafana/dashboards/configmap.yaml")
+}
+
+resource "kubectl_manifest" "grafana_dashboards" {
+  for_each          = data.kubectl_file_documents.grafana_dashboards.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
 # Ingress
 data "kubectl_file_documents" "ingress" {
   content = file("${var.k8s_dir}/ingress/ingress.yaml")
@@ -144,6 +271,8 @@ resource "kubectl_manifest" "ingress" {
     kubectl_manifest.backend_service,
     kubectl_manifest.stack,
     kubectl_manifest.linkedlist,
-    kubectl_manifest.graph
+    kubectl_manifest.graph,
+    kubectl_manifest.prometheus_service,
+    kubectl_manifest.grafana_service
   ]
 }
