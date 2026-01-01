@@ -570,10 +570,11 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            set -euo pipefail
                             echo 'Port-forward is enabled. Setting up port-forward...'
                             
                             # Kill existing port-forwards
-                            pkill -f 'kubectl port-forward' || true
+                            sudo pkill -f 'kubectl port-forward' || true
                             sleep 1
                             
                             # Get kubectl path (fail fast if missing)
@@ -616,16 +617,18 @@ EOF
                               exit 1
                             fi
                             
-                            # Wait for service to start
+                            # Wait for service to settle
                             sleep 3
                             
-                            # Verify service is running
+                            # Verify service is running and port is listening
                             if sudo systemctl is-active --quiet k8s-port-forward.service; then
                                 echo '✓ Port-forward service is running'
                                 sudo systemctl status k8s-port-forward.service --no-pager -l
+                                sudo netstat -tuln | grep ':80' || { echo '⚠ Port 80 not listening'; exit 1; }
                             else
                                 echo '✗ Port-forward service failed to start'
                                 sudo systemctl status k8s-port-forward.service --no-pager -l
+                                exit 1
                             fi
                             
                             # Check if port is listening
