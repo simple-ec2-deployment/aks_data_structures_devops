@@ -571,6 +571,7 @@ SCRIPT
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
                             set -euo pipefail
+                            set -x
                             echo 'Port-forward is enabled. Setting up port-forward...'
                             
                             # Kill existing port-forwards
@@ -608,7 +609,12 @@ EOF
                             # Reload systemd and start the service
                             sudo systemctl daemon-reload
                             sudo systemctl enable k8s-port-forward.service
-                            sudo systemctl restart k8s-port-forward.service
+                            if ! sudo systemctl restart k8s-port-forward.service; then
+                              echo '✗ Failed to restart k8s-port-forward; showing status/logs'
+                              sudo systemctl status k8s-port-forward.service --no-pager -l || true
+                              sudo journalctl -u k8s-port-forward --no-pager -n 80 || true
+                              exit 1
+                            fi
                             
                             # Verify service is active; otherwise show logs and fail
                             if ! sudo systemctl is-active --quiet k8s-port-forward.service; then
