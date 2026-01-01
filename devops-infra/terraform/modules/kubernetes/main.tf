@@ -189,6 +189,11 @@ resource "kubectl_manifest" "prometheus_deployment" {
   for_each          = data.kubectl_file_documents.prometheus.manifests
   yaml_body         = each.value
   override_namespace = local.namespace
+  depends_on = [
+    kubectl_manifest.prometheus_clusterrole,
+    kubectl_manifest.prometheus_alerts,
+    kubectl_manifest.prometheus_config
+  ]
 }
 
 data "kubectl_file_documents" "prometheus_service" {
