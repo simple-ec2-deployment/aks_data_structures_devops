@@ -434,6 +434,29 @@ SCRIPT
                                 exit 1
                             }
                             echo '✓ Terraform apply completed successfully'
+
+                            echo ''
+                            echo 'Checking Prometheus rollout...'
+                            if ! kubectl rollout status deployment/prometheus -n default --timeout=120s; then
+                                echo 'Prometheus rollout failed; cleaning deployment and retrying via Terraform...'
+                                kubectl delete deployment prometheus --ignore-not-found
+                                kubectl delete rs -l app=prometheus --ignore-not-found
+                                kubectl delete pod -l app=prometheus --ignore-not-found
+                                
+                                echo 'Re-running terraform apply after cleanup...'
+                                terraform apply -auto-approve || {
+                                    echo 'ERROR: Terraform re-apply failed after Prometheus cleanup'
+                                    exit 1
+                                }
+
+                                echo 'Waiting for Prometheus rollout after re-apply...'
+                                if ! kubectl rollout status deployment/prometheus -n default --timeout=120s; then
+                                    echo 'ERROR: Prometheus still not ready after re-apply'
+                                    exit 1
+                                fi
+                            else
+                                echo '✓ Prometheus rollout successful'
+                            fi
                         "
                     '''
                 }
