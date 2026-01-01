@@ -1,12 +1,13 @@
-# Prometheus RBAC Configuration
----
+# Prometheus ServiceAccount
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: prometheus
+  namespace: default
   labels:
     app: prometheus
 ---
+# Prometheus ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -20,14 +21,30 @@ rules:
       - services
       - endpoints
       - pods
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups: ["extensions", "networking.k8s.io"]
     resources:
       - ingresses
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ["apps"]
+    resources:
+      - statefulsets
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
   - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
-    verbs: ["get"]
+    verbs:
+      - get
 ---
+# Prometheus ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
