@@ -158,8 +158,13 @@ resource "kubectl_manifest" "prometheus_service" {
 # ==========================================
 # Monitoring - Grafana
 # ==========================================
+data "kubectl_file_documents" "grafana_configmap" {
+  content = file("${local.k8s_root}/monitoring/grafana/configmap.yaml")
+}
+
 resource "kubectl_manifest" "grafana_configmap" {
-  yaml_body  = file("${local.k8s_root}/monitoring/grafana/configmap.yaml")
+  for_each   = data.kubectl_file_documents.grafana_configmap.manifests
+  yaml_body  = each.value
   depends_on = [kubectl_manifest.ingress_controller]
 }
 
