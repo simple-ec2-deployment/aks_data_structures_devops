@@ -613,6 +613,7 @@ EOF
                             # Verify service is active; otherwise show logs and fail
                             if ! sudo systemctl is-active --quiet k8s-port-forward.service; then
                               echo "✗ Port-forward service failed to start; showing logs..."
+                              sudo systemctl status k8s-port-forward.service --no-pager -l || true
                               sudo journalctl -u k8s-port-forward --no-pager -n 80 || true
                               exit 1
                             fi
