@@ -44,8 +44,7 @@ spec:
         - name: prometheus-config
           mountPath: /etc/prometheus
         - name: prometheus-alerts
-          mountPath: /etc/prometheus/alerts.yml
-          subPath: alerts.yml
+          mountPath: /etc/prometheus/alerts
         - name: prometheus-storage
           mountPath: /prometheus
         livenessProbe:

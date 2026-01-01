@@ -20,7 +20,7 @@ data:
             - targets: []
 
     rule_files:
-      - /etc/prometheus/alerts.yml
+      - /etc/prometheus/alerts/alerts.yml
 
     scrape_configs:
       # Prometheus self-monitoring
