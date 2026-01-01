@@ -53,6 +53,12 @@ cd "$REPO_DIR"
 # Point Docker to Minikube daemon
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
+# Remove old tags (keep only latest)
+docker images stack-service --format '{{.Repository}}:{{.Tag}}' | grep '^stack-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
+docker images linkedlist-service --format '{{.Repository}}:{{.Tag}}' | grep '^linkedlist-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
+docker images graph-service --format '{{.Repository}}:{{.Tag}}' | grep '^graph-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
+docker image prune -f || true
+
 echo "Building Stack Service..."
 if [ -f "stack/Dockerfile" ]; then
   docker build -t stack-service:latest stack/

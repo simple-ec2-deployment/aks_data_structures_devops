@@ -111,7 +111,7 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' BUILD_NUMBER='${BUILD_NUMBER}' bash -s" <<'SCRIPT'
+                          "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
 cd "$API_DIR"
@@ -119,13 +119,15 @@ cd "$API_DIR"
 # Point Docker to Minikube daemon
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
-# Build image
+# Remove old tags (keep only latest)
+docker images backend-service --format '{{.Repository}}:{{.Tag}}' | grep '^backend-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
+docker image prune -f || true
+
 echo "Building Docker image: backend-service:latest"
 docker build -t backend-service:latest .
-docker tag backend-service:latest backend-service:build-${BUILD_NUMBER}
 
-echo "✓ Docker image built successfully"
-docker images | grep backend-service || true
+echo "✓ Docker image built successfully (only latest retained)"
+docker images backend-service
 SCRIPT
                     '''
                 }

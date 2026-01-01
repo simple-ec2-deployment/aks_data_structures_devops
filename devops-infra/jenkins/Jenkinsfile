@@ -145,82 +145,6 @@ SCRIPT
             }
         }
         
-        stage('Clone Service Repos to EC2') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage 2: Cloning service repositories to EC2"
-                    echo "=========================================="
-                }
-                
-                sshagent(credentials: ['ec2-ssh-key']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' API_REPO='${API_REPO_URL}' FRONTEND_REPO='${FRONTEND_REPO_URL}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
-set -euo pipefail
-: "${BRANCH:=main}"
-
-normalize_url() {
-  local input="$1"
-  if echo "$input" | grep -qiE '^git@github.com:'; then
-    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
-  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
-    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-  elif ! echo "$input" | grep -qiE '^https?://'; then
-    input="https://$input"
-  fi
-  echo "$input"
-}
-
-sanitize_url() {
-  local input="$1"
-  echo "$input" | sed -E "s|^https://github.com/||; s|^http://github.com/||"
-}
-
-if [ -n "${GITHUB_PASS:-}" ]; then
-  TOKEN="$GITHUB_PASS"
-else
-  TOKEN="$GITHUB_PAT"
-fi
-
-AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
-AUTH_HEADER="Authorization: Basic $AUTH_B64"
-
-clone_or_update() {
-  local url="$1"; local dir="$2"
-  local full="$(normalize_url "$url")"
-  local clean="$(sanitize_url "$full")"
-  if [ ! -d "$dir/.git" ]; then
-    echo "Cloning $clean to $dir (branch: $BRANCH) ..."
-    git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$full" "$dir"
-  else
-    echo "Updating $dir (branch: $BRANCH) ..."
-    cd "$dir"
-    git config --global --add safe.directory "$dir"
-    git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-    git -c http.extraHeader="$AUTH_HEADER" pull "$full" "$BRANCH" || { git fetch --all; git reset --hard "origin/$BRANCH"; }
-  fi
-}
-
-clone_or_update "$API_REPO" "$API_DIR"
-clone_or_update "$FRONTEND_REPO" "$FRONTEND_DIR"
-
-echo ''
-echo '=== Repo status ==='
-for repo in "$API_DIR" "$FRONTEND_DIR"; do
-  if [ -d "$repo/.git" ]; then
-    cd "$repo"
-    echo "[$repo]"
-    echo '  Branch:' $(git branch --show-current)
-    echo '  Commit:' $(git log -1 --oneline)
-  fi
-done
-SCRIPT
-                    '''
-                }
-            }
-        }
-        
         stage('Ensure Minikube is Running on EC2') {
             steps {
                 script {
@@ -280,53 +204,6 @@ until sudo -u "${EC2_USER}" -H bash -lc 'kubectl cluster-info' >/dev/null 2>&1; 
   sleep 15
 done
 echo 'Kubernetes cluster is accessible.'
-SCRIPT
-                    '''
-                }
-            }
-        }
-        
-        stage('Build & Deploy Services') {
-            when {
-                expression { return !(params.USE_CHILD_PIPELINES == null ? true : params.USE_CHILD_PIPELINES) }
-            }
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "Stage 4: Building Docker images on EC2 (Direct)"
-                    echo "=========================================="
-                }
-                
-                sshagent(credentials: ['ec2-ssh-key']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "REPO_DIR='${REPO_DIR}' API_DIR='${API_DIR}' FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
-set -euo pipefail
-# Use infra repo as working dir
-cd "${REPO_DIR}"
-# Point Docker to Minikube
-eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
-build_if_exists() {
-  local tag="$1"; local path="$2"
-  if [ -f "$path/Dockerfile" ]; then
-    echo "Building $tag:latest from $path ..."
-    docker build -t "$tag:latest" "$path" || { echo "ERROR: Failed to build $tag"; exit 1; }
-    echo "✓ Successfully built $tag:latest"
-  else
-    echo "WARNING: Dockerfile not found at $path"
-  fi
-}
-# Data-structures services (from infra repo)
-build_if_exists stack-service "${REPO_DIR}/stack"
-build_if_exists linkedlist-service "${REPO_DIR}/linkedlist"
-build_if_exists graph-service "${REPO_DIR}/graph"
-# API service
-build_if_exists backend-service "${API_DIR}"
-# Frontend service
-build_if_exists ui-service "${FRONTEND_DIR}"
-echo ''
-echo 'All images built successfully:'
-docker images | grep -E '(stack-service|linkedlist-service|graph-service|backend-service|ui-service)' || true
 SCRIPT
                     '''
                 }

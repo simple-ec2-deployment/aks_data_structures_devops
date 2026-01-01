@@ -111,7 +111,7 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' BUILD_NUMBER='${BUILD_NUMBER}' bash -s" <<'SCRIPT'
+                          "FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
 cd "$FRONTEND_DIR"
@@ -119,13 +119,15 @@ cd "$FRONTEND_DIR"
 # Point Docker to Minikube daemon
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
-# Build image
+# Remove old tags (keep only latest)
+docker images ui-service --format '{{.Repository}}:{{.Tag}}' | grep '^ui-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
+docker image prune -f || true
+
 echo "Building Docker image: ui-service:latest"
 docker build -t ui-service:latest .
-docker tag ui-service:latest ui-service:build-${BUILD_NUMBER}
 
-echo "✓ Docker image built successfully"
-docker images | grep ui-service || true
+echo "✓ Docker image built successfully (only latest retained)"
+docker images ui-service
 SCRIPT
                     '''
                 }
