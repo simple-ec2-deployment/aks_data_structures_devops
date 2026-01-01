@@ -175,6 +175,16 @@ data "kubectl_file_documents" "prometheus" {
   content = file("${var.k8s_dir}/monitoring/prometheus/deployment.yaml")
 }
 
+data "kubectl_file_documents" "prometheus_alerts" {
+  content = file("${var.k8s_dir}/monitoring/prometheus/alerts.yaml")
+}
+
+resource "kubectl_manifest" "prometheus_alerts" {
+  for_each          = data.kubectl_file_documents.prometheus_alerts.manifests
+  yaml_body         = each.value
+  override_namespace = local.namespace
+}
+
 resource "kubectl_manifest" "prometheus_deployment" {
   for_each          = data.kubectl_file_documents.prometheus.manifests
   yaml_body         = each.value

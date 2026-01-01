@@ -130,6 +130,11 @@ resource "kubectl_manifest" "prometheus_clusterrole" {
   depends_on = [kubectl_manifest.ingress_controller]
 }
 
+resource "kubectl_manifest" "prometheus_alerts" {
+  yaml_body  = file("${local.k8s_root}/monitoring/prometheus/alerts.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
 resource "kubectl_manifest" "prometheus_configmap" {
   yaml_body  = file("${local.k8s_root}/monitoring/prometheus/configmap.yaml")
   depends_on = [kubectl_manifest.ingress_controller]
@@ -139,6 +144,7 @@ resource "kubectl_manifest" "prometheus_deployment" {
   yaml_body  = file("${local.k8s_root}/monitoring/prometheus/deployment.yaml")
   depends_on = [
     kubectl_manifest.prometheus_clusterrole,
+    kubectl_manifest.prometheus_alerts,
     kubectl_manifest.prometheus_configmap,
     kubectl_manifest.ingress_controller
   ]
