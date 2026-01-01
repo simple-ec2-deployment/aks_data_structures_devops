@@ -273,6 +273,7 @@ resource "kubectl_manifest" "ingress" {
     kubectl_manifest.linkedlist,
     kubectl_manifest.graph,
     kubectl_manifest.prometheus_service,
-    kubectl_manifest.grafana_service
+    kubectl_manifest.grafana_service,
+    kubectl_manifest.database_service
   ]
 }
