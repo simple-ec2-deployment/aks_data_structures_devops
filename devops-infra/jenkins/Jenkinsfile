@@ -576,8 +576,12 @@ SCRIPT
                             pkill -f 'kubectl port-forward' || true
                             sleep 1
                             
-                            # Get kubectl path
-                            KUBECTL_PATH=\\$(which kubectl)
+                            # Get kubectl path (fail fast if missing)
+                            KUBECTL_PATH=\\$(command -v kubectl || true)
+                            if [ -z "\\${KUBECTL_PATH}" ]; then
+                              echo "ERROR: kubectl not found in PATH"
+                              exit 1
+                            fi
                             
                             # Create a systemd service for persistent port-forward
                             sudo tee /etc/systemd/system/k8s-port-forward.service > /dev/null << EOF
@@ -604,6 +608,13 @@ EOF
                             sudo systemctl daemon-reload
                             sudo systemctl enable k8s-port-forward.service
                             sudo systemctl restart k8s-port-forward.service
+                            
+                            # Verify service is active; otherwise show logs and fail
+                            if ! sudo systemctl is-active --quiet k8s-port-forward.service; then
+                              echo "✗ Port-forward service failed to start; showing logs..."
+                              sudo journalctl -u k8s-port-forward --no-pager -n 80 || true
+                              exit 1
+                            fi
                             
                             # Wait for service to start
                             sleep 3
