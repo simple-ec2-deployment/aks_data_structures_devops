@@ -457,6 +457,37 @@ SCRIPT
                             else
                                 echo '✓ Prometheus rollout successful'
                             fi
+
+                            echo ''
+                            echo 'Checking Grafana config and rollout...'
+                            if ! kubectl get configmap grafana-dashboards-provider >/dev/null 2>&1; then
+                                echo 'Grafana dashboards provider configmap missing; re-running Terraform...'
+                                terraform apply -auto-approve || {
+                                    echo 'ERROR: Terraform re-apply failed while creating Grafana configmaps'
+                                    exit 1
+                                }
+                            fi
+
+                            if ! kubectl rollout status deployment/grafana -n default --timeout=120s; then
+                                echo 'Grafana rollout failed; cleaning deployment and retrying via Terraform...'
+                                kubectl delete deployment grafana --ignore-not-found
+                                kubectl delete rs -l app=grafana --ignore-not-found
+                                kubectl delete pod -l app=grafana --ignore-not-found
+
+                                echo 'Re-running terraform apply after Grafana cleanup...'
+                                terraform apply -auto-approve || {
+                                    echo 'ERROR: Terraform re-apply failed after Grafana cleanup'
+                                    exit 1
+                                }
+
+                                echo 'Waiting for Grafana rollout after re-apply...'
+                                if ! kubectl rollout status deployment/grafana -n default --timeout=120s; then
+                                    echo 'ERROR: Grafana still not ready after re-apply'
+                                    exit 1
+                                fi
+                            else
+                                echo '✓ Grafana rollout successful'
+                            fi
                         "
                     '''
                 }
