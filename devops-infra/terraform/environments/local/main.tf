@@ -96,6 +96,88 @@ resource "kubectl_manifest" "graph" {
 }
 
 # ==========================================
+# Database (Postgres)
+# ==========================================
+resource "kubectl_manifest" "database_secret" {
+  yaml_body  = file("${local.k8s_root}/database/secret.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
+resource "kubectl_manifest" "database_pvc" {
+  yaml_body  = file("${local.k8s_root}/database/pvc.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
+resource "kubectl_manifest" "database_statefulset" {
+  yaml_body  = file("${local.k8s_root}/database/statefulset.yaml")
+  depends_on = [
+    kubectl_manifest.database_secret,
+    kubectl_manifest.database_pvc,
+    kubectl_manifest.ingress_controller
+  ]
+}
+
+resource "kubectl_manifest" "database_service" {
+  yaml_body  = file("${local.k8s_root}/database/service.yaml")
+  depends_on = [kubectl_manifest.database_statefulset]
+}
+
+# ==========================================
+# Monitoring - Prometheus
+# ==========================================
+resource "kubectl_manifest" "prometheus_clusterrole" {
+  yaml_body  = file("${local.k8s_root}/monitoring/prometheus/clusterrole.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
+resource "kubectl_manifest" "prometheus_configmap" {
+  yaml_body  = file("${local.k8s_root}/monitoring/prometheus/configmap.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
+resource "kubectl_manifest" "prometheus_deployment" {
+  yaml_body  = file("${local.k8s_root}/monitoring/prometheus/deployment.yaml")
+  depends_on = [
+    kubectl_manifest.prometheus_clusterrole,
+    kubectl_manifest.prometheus_configmap,
+    kubectl_manifest.ingress_controller
+  ]
+}
+
+resource "kubectl_manifest" "prometheus_service" {
+  yaml_body  = file("${local.k8s_root}/monitoring/prometheus/service.yaml")
+  depends_on = [kubectl_manifest.prometheus_deployment]
+}
+
+# ==========================================
+# Monitoring - Grafana
+# ==========================================
+resource "kubectl_manifest" "grafana_configmap" {
+  yaml_body  = file("${local.k8s_root}/monitoring/grafana/configmap.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
+resource "kubectl_manifest" "grafana_dashboards" {
+  yaml_body  = file("${local.k8s_root}/monitoring/grafana/dashboards/configmap.yaml")
+  depends_on = [kubectl_manifest.ingress_controller]
+}
+
+resource "kubectl_manifest" "grafana_deployment" {
+  yaml_body  = file("${local.k8s_root}/monitoring/grafana/deployment.yaml")
+  depends_on = [
+    kubectl_manifest.grafana_configmap,
+    kubectl_manifest.grafana_dashboards,
+    kubectl_manifest.prometheus_service,
+    kubectl_manifest.ingress_controller
+  ]
+}
+
+resource "kubectl_manifest" "grafana_service" {
+  yaml_body  = file("${local.k8s_root}/monitoring/grafana/service.yaml")
+  depends_on = [kubectl_manifest.grafana_deployment]
+}
+
+# ==========================================
 # Ingress (from new structured folder)
 # ==========================================
 resource "kubectl_manifest" "ingress" {
@@ -105,7 +187,10 @@ resource "kubectl_manifest" "ingress" {
     kubectl_manifest.frontend_service,
     kubectl_manifest.stack,
     kubectl_manifest.linkedlist,
-    kubectl_manifest.graph
+    kubectl_manifest.graph,
+    kubectl_manifest.database_service,
+    kubectl_manifest.prometheus_service,
+    kubectl_manifest.grafana_service
   ]
 }
 
