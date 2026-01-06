@@ -364,6 +364,27 @@ if [ "$SKIP_BUILD" = "false" ]; then
         print_error "Required images not found in Minikube Docker environment"
         exit 1
     fi
+
+    # Ensure images are loaded into the Minikube node runtime
+    echo ""
+    echo "Loading images into Minikube node..."
+    for img in backend-service:latest ui-service:latest stack-service:latest linkedlist-service:latest graph-service:latest; do
+        if [ "$EC2_ENV" = true ]; then
+            sudo -u ubuntu minikube image load "$img" >/dev/null 2>&1 || true
+        else
+            minikube image load "$img" >/dev/null 2>&1 || true
+        fi
+    done
+    print_status "Images loaded into Minikube"
+
+    # List images inside Minikube for verification
+    echo ""
+    echo "Images inside Minikube node:"
+    if [ "$EC2_ENV" = true ]; then
+        sudo -u ubuntu minikube ssh "docker images | grep -E 'service|REPOSITORY'" || true
+    else
+        minikube ssh "docker images | grep -E 'service|REPOSITORY'" || true
+    fi
 else
     print_status "Skipping Docker build as requested"
 fi
