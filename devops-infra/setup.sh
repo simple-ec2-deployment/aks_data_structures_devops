@@ -213,24 +213,68 @@ fi
 # Clone repositories if needed
 print_header "Step 3: Setting up Source Code"
 
-REPO_DIR="/home/ubuntu/aks_data_structures_devops"
+# Repository URLs (same as Jenkins defaults)
+INFRA_REPO_URL="github.com/simple-ec2-deployment/aks_data_structures_devops.git"
+API_REPO_URL="github.com/simple-ec2-deployment/aks_data_structures_backend.git"
+FRONTEND_REPO_URL="github.com/simple-ec2-deployment/aks_data_structures_frontend.git"
+
+# Function to normalize URL
+normalize_url() {
+    local input="$1"
+    if echo "$input" | grep -qiE '^git@github.com:'; then
+        input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+    elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+        input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+    elif ! echo "$input" | grep -qiE '^https?://'; then
+        input="https://$input"
+    fi
+    echo "$input"
+}
+
+# Function to clone repository
+clone_repo() {
+    local repo_url="$1"
+    local target_dir="$2"
+    local repo_name="$3"
+    
+    if [ ! -d "$target_dir" ]; then
+        echo "Cloning $repo_name repository..."
+        
+        # Try cloning without authentication first (public repo)
+        if ! git clone "$(normalize_url "$repo_url")" "$target_dir" 2>/dev/null; then
+            echo "Public clone failed, trying with GitHub credentials..."
+            # If that fails, we'll need credentials - for now, just show warning
+            echo "⚠ Could not clone $repo_name. You may need to set up GitHub credentials or clone manually."
+            return 1
+        fi
+        print_status "$repo_name repository cloned"
+    else
+        print_status "$repo_name repository already exists"
+        # Update existing repository
+        cd "$target_dir"
+        git pull origin main 2>/dev/null || true
+        cd - >/dev/null
+    fi
+}
+
 if [ "$EC2_ENV" = true ]; then
-    # On EC2, repositories should already be cloned by Jenkins
+    # On EC2, clone repositories to expected locations
+    echo "Setting up repositories on EC2..."
+    
+    # Clone devops repository (should already be there)
+    REPO_DIR="/home/ubuntu/aks_data_structures_devops"
     if [ ! -d "$REPO_DIR" ]; then
-        print_warning "Repository directory not found. Creating..."
-        sudo -u ubuntu mkdir -p "$REPO_DIR"
+        clone_repo "$INFRA_REPO_URL" "$REPO_DIR" "devops"
     fi
     
-    # Check if required directories exist
-    if [ ! -d "/home/ubuntu/backend" ]; then
-        print_warning "Backend repository not found. You may need to run Jenkins pipeline first."
-    fi
+    # Clone backend repository
+    clone_repo "$API_REPO_URL" "/home/ubuntu/backend" "backend"
     
-    if [ ! -d "/home/ubuntu/frontend" ]; then
-        print_warning "Frontend repository not found. You may need to run Jenkins pipeline first."
-    fi
+    # Clone frontend repository  
+    clone_repo "$FRONTEND_REPO_URL" "/home/ubuntu/frontend" "frontend"
+    
 else
-    # Local development - check if we have the required repositories
+    # Local development - check if we have required repositories
     if [ ! -d "$PROJECT_ROOT/../aks_data_structures_backend" ]; then
         print_warning "Backend repository not found at ../aks_data_structures_backend"
     fi
