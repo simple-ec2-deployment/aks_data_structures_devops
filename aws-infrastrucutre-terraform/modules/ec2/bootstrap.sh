@@ -123,6 +123,22 @@ else
   warn "User added to docker group; re-login may be required."
 fi
 
+# Ensure kubectl/minikube directories exist and owned by ssh user
+sudo mkdir -p /home/${USER}/.kube /home/${USER}/.minikube
+sudo chown -R ${USER}:${USER} /home/${USER}/.kube /home/${USER}/.minikube
+
+# Clone infrastructure repo (idempotent)
+REPO_URL="${REPO_URL:-https://github.com/simple-ec2-deployment/aks_data_structures_devops.git}"
+REPO_DIR="/home/${USER}/aks_data_structures_devops"
+if [ ! -d "$REPO_DIR/.git" ]; then
+  log "Cloning infrastructure repo to $REPO_DIR"
+  git clone "$REPO_URL" "$REPO_DIR" || warn "Clone failed; please check credentials or network"
+else
+  log "Repo already present at $REPO_DIR"
+  (cd "$REPO_DIR" && git pull --ff-only || warn "Git pull failed; please check repo access")
+fi
+sudo chown -R ${USER}:${USER} "$REPO_DIR"
+
 log "Versions:"
 if need_cmd kubectl; then kubectl version --client || true; else warn "kubectl not found"; fi
 if need_cmd minikube; then minikube version || true; else warn "minikube not found"; fi

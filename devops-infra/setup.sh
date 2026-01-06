@@ -165,6 +165,10 @@ if [ "$EC2_ENV" = true ]; then
     # On EC2, use Minikube
     print_status "Setting up Minikube on EC2..."
     
+    # Ensure minikube/kube dirs exist and owned by ubuntu
+    sudo mkdir -p /home/ubuntu/.minikube /home/ubuntu/.kube
+    sudo chown -R ubuntu:ubuntu /home/ubuntu/.minikube /home/ubuntu/.kube
+    
     # Fix Minikube directory permissions
     if [ ! -d "/home/ubuntu/.minikube" ]; then
         echo "Creating Minikube directory with proper permissions..."
