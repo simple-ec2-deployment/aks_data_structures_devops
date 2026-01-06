@@ -302,7 +302,13 @@ if [ "$SKIP_BUILD" = "false" ]; then
     # Docker command wrapper (preserve minikube env vars even when using sudo)
     DOCKER_CMD="docker"
     if [ "$EC2_ENV" = true ]; then
-        DOCKER_CMD="sudo -E -u ubuntu env PATH=$PATH DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY DOCKER_HOST=$DOCKER_HOST DOCKER_CERT_PATH=$DOCKER_CERT_PATH DOCKER_API_VERSION=$DOCKER_API_VERSION docker"
+        DOCKER_CMD="sudo -E -u ubuntu env \
+PATH=$PATH \
+DOCKER_TLS_VERIFY=${DOCKER_TLS_VERIFY:-} \
+DOCKER_HOST=${DOCKER_HOST:-} \
+DOCKER_CERT_PATH=${DOCKER_CERT_PATH:-} \
+DOCKER_API_VERSION=${DOCKER_API_VERSION:-} \
+docker"
     fi
     
     # Check for ErrImageNeverPull pods and clean them up first
