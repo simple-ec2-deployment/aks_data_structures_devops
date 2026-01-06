@@ -288,9 +288,23 @@ fi
 if [ "$SKIP_BUILD" = "false" ]; then
     print_header "Step 4: Building Docker Images"
     
-    # Point Docker to Minikube daemon if using Minikube
-    if command_exists minikube >/dev/null 2>&1; then
+    # IMPORTANT: Use Minikube's Docker environment on EC2
+    if [ "$EC2_ENV" = true ]; then
+        # Point to Minikube's Docker daemon
+        eval $(sudo -u ubuntu minikube docker-env) || true
+        echo "✓ Using Minikube Docker environment"
+    elif command_exists minikube >/dev/null 2>&1; then
+        # Local development with Minikube
         eval $(minikube docker-env 2>/dev/null) || true
+        echo "✓ Using Minikube Docker environment"
+    fi
+    
+    # Check for ErrImageNeverPull pods and clean them up first
+    if kubectl get pods | grep -q "ErrImageNeverPull"; then
+        echo "⚠ Found pods with ErrImageNeverPull. Cleaning up..."
+        kubectl delete deployment frontend-deployment backend-deployment stack-deployment linkedlist-deployment graph-deployment --ignore-not-found=true
+        sleep 5
+        print_status "Cleaned up problematic deployments"
     fi
     
     # Build backend image
@@ -333,6 +347,23 @@ if [ "$SKIP_BUILD" = "false" ]; then
             print_warning "$service source not found, skipping build"
         fi
     done
+    
+    # Verify images exist in Minikube Docker environment
+    echo ""
+    echo "Verifying images in Minikube Docker environment..."
+    if [ "$EC2_ENV" = true ]; then
+        IMAGES=$(sudo -u ubuntu docker images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(backend-service|ui-service|stack-service|linkedlist-service|graph-service)")
+    else
+        IMAGES=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(backend-service|ui-service|stack-service|linkedlist-service|graph-service)")
+    fi
+    
+    if [ -n "$IMAGES" ]; then
+        echo "✓ Found required images:"
+        echo "$IMAGES"
+    else
+        print_error "Required images not found in Minikube Docker environment"
+        exit 1
+    fi
 else
     print_status "Skipping Docker build as requested"
 fi
