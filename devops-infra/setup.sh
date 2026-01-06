@@ -360,15 +360,10 @@ docker"
         fi
     done
     
-    # Verify images exist in Minikube Docker environment
+    # Verify images exist in Minikube Docker environment (tolerate empty grep without exiting)
     echo ""
     echo "Verifying images in Minikube Docker environment..."
-    if [ "$EC2_ENV" = true ]; then
-        IMAGES=$(sudo -u ubuntu docker images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(backend-service|ui-service|stack-service|linkedlist-service|graph-service)")
-    else
-        IMAGES=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(backend-service|ui-service|stack-service|linkedlist-service|graph-service)")
-    fi
-    
+    IMAGES=$($DOCKER_CMD images --format "table {{.Repository}}:{{.Tag}}" 2>/dev/null | grep -E "(backend-service|ui-service|stack-service|linkedlist-service|graph-service)" || true)
     if [ -n "$IMAGES" ]; then
         echo "✓ Found required images:"
         echo "$IMAGES"
@@ -380,7 +375,7 @@ docker"
     # List images for verification
     echo ""
     echo "Images built locally (current Docker context):"
-    $DOCKER_CMD images --format "table {{.Repository}}:{{.Tag}}"
+    $DOCKER_CMD images --format "table {{.Repository}}:{{.Tag}}" || true
 else
     print_status "Skipping Docker build as requested"
 fi
