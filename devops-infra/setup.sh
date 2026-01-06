@@ -299,6 +299,12 @@ if [ "$SKIP_BUILD" = "false" ]; then
         echo "✓ Using Minikube Docker environment"
     fi
     
+    # Docker command wrapper (preserve minikube env vars even when using sudo)
+    DOCKER_CMD="docker"
+    if [ "$EC2_ENV" = true ]; then
+        DOCKER_CMD="sudo -E -u ubuntu env PATH=$PATH DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY DOCKER_HOST=$DOCKER_HOST DOCKER_CERT_PATH=$DOCKER_CERT_PATH DOCKER_API_VERSION=$DOCKER_API_VERSION docker"
+    fi
+    
     # Check for ErrImageNeverPull pods and clean them up first
     if kubectl get pods | grep -q "ErrImageNeverPull"; then
         echo "⚠ Found pods with ErrImageNeverPull. Cleaning up..."
@@ -310,11 +316,11 @@ if [ "$SKIP_BUILD" = "false" ]; then
     # Build backend image
     if [ "$EC2_ENV" = true ] && [ -d "/home/ubuntu/backend" ]; then
         echo "Building backend-service..."
-        sudo -u ubuntu docker build -t backend-service:latest /home/ubuntu/backend || print_warning "Backend build failed"
+        $DOCKER_CMD build -t backend-service:latest /home/ubuntu/backend || print_warning "Backend build failed"
         print_status "backend-service:latest built"
     elif [ -d "$PROJECT_ROOT/../aks_data_structures_backend" ]; then
         echo "Building backend-service..."
-        docker build -t backend-service:latest "$PROJECT_ROOT/../aks_data_structures_backend" || print_warning "Backend build failed"
+        $DOCKER_CMD build -t backend-service:latest "$PROJECT_ROOT/../aks_data_structures_backend" || print_warning "Backend build failed"
         print_status "backend-service:latest built"
     else
         print_warning "Backend source not found, skipping build"
@@ -323,11 +329,11 @@ if [ "$SKIP_BUILD" = "false" ]; then
     # Build frontend image
     if [ "$EC2_ENV" = true ] && [ -d "/home/ubuntu/frontend" ]; then
         echo "Building ui-service..."
-        sudo -u ubuntu docker build -t ui-service:latest /home/ubuntu/frontend || print_warning "Frontend build failed"
+        $DOCKER_CMD build -t ui-service:latest /home/ubuntu/frontend || print_warning "Frontend build failed"
         print_status "ui-service:latest built"
     elif [ -d "$PROJECT_ROOT/../aks_data_structures_frontend" ]; then
         echo "Building ui-service..."
-        docker build -t ui-service:latest "$PROJECT_ROOT/../aks_data_structures_frontend" || print_warning "Frontend build failed"
+        $DOCKER_CMD build -t ui-service:latest "$PROJECT_ROOT/../aks_data_structures_frontend" || print_warning "Frontend build failed"
         print_status "ui-service:latest built"
     else
         print_warning "Frontend source not found, skipping build"
@@ -337,11 +343,7 @@ if [ "$SKIP_BUILD" = "false" ]; then
     for service in stack linkedlist graph; do
         if [ -d "$PROJECT_ROOT/$service" ]; then
             echo "Building ${service}-service..."
-            if [ "$EC2_ENV" = true ]; then
-                sudo -u ubuntu docker build -t "${service}-service:latest" "$PROJECT_ROOT/$service" || print_warning "${service} build failed"
-            else
-                docker build -t "${service}-service:latest" "$PROJECT_ROOT/$service" || print_warning "${service} build failed"
-            fi
+            $DOCKER_CMD build -t "${service}-service:latest" "$PROJECT_ROOT/$service" || print_warning "${service} build failed"
             print_status "${service}-service:latest built"
         else
             print_warning "$service source not found, skipping build"
@@ -365,26 +367,10 @@ if [ "$SKIP_BUILD" = "false" ]; then
         exit 1
     fi
 
-    # Ensure images are loaded into the Minikube node runtime
+    # List images for verification
     echo ""
-    echo "Loading images into Minikube node..."
-    for img in backend-service:latest ui-service:latest stack-service:latest linkedlist-service:latest graph-service:latest; do
-        if [ "$EC2_ENV" = true ]; then
-            sudo -u ubuntu minikube image load "$img" >/dev/null 2>&1 || true
-        else
-            minikube image load "$img" >/dev/null 2>&1 || true
-        fi
-    done
-    print_status "Images loaded into Minikube"
-
-    # List images inside Minikube for verification
-    echo ""
-    echo "Images inside Minikube node:"
-    if [ "$EC2_ENV" = true ]; then
-        sudo -u ubuntu minikube ssh "docker images | grep -E 'service|REPOSITORY'" || true
-    else
-        minikube ssh "docker images | grep -E 'service|REPOSITORY'" || true
-    fi
+    echo "Images built locally (current Docker context):"
+    $DOCKER_CMD images --format "table {{.Repository}}:{{.Tag}}"
 else
     print_status "Skipping Docker build as requested"
 fi
