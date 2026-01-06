@@ -373,6 +373,17 @@ print_header "Step 5: Deploying Kubernetes Resources"
 
 DEVOPS_INFRA="$PROJECT_ROOT/devops-infra"
 
+# Fix imagePullPolicy in deployment manifests (change Never to IfNotPresent for Minikube)
+echo "Fixing imagePullPolicy for Minikube compatibility..."
+find "$DEVOPS_INFRA/kubernetes" -name "*.yaml" -exec sed -i 's/imagePullPolicy: Never/imagePullPolicy: IfNotPresent/g' {} \;
+print_status "Fixed imagePullPolicy in deployment manifests"
+
+# Clean up existing deployments to ensure they use the updated manifests
+echo "Cleaning up existing deployments..."
+kubectl delete deployment frontend-deployment backend-deployment stack-deployment linkedlist-deployment graph-deployment --ignore-not-found=true
+sleep 3
+print_status "Cleaned up existing deployments"
+
 # Apply namespaces
 echo "Applying namespaces..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/" 2>/dev/null || true
