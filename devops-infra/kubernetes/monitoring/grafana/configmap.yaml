@@ -18,6 +18,13 @@ data:
         url: http://prometheus-service:9090/prometheus
         isDefault: true
         editable: false
+      # Compatibility alias for imported dashboards expecting ${DS_PROMETHEUS}
+      - name: "${DS_PROMETHEUS}"
+        type: prometheus
+        access: proxy
+        url: http://prometheus-service:9090/prometheus
+        isDefault: false
+        editable: false
 ---
 # Dashboard Provider Configuration
 apiVersion: v1
