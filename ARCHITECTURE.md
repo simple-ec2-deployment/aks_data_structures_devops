@@ -1,464 +1,177 @@
-# Architecture Documentation
+# Architecture Overview
 
-Complete architecture documentation for the AKS Data Structures Platform.
+AKS Data Structures Platform — single-node Kubernetes (Minikube) running on AWS EC2, provisioned by Terraform, with local Docker builds pushed into Minikube. Ingress NGINX exposes path-based routing on port 80. Monitoring is Prometheus + Grafana. CI/CD reference is Jenkins.
 
-## System Architecture
-
-### High-Level Overview
+## High-Level Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                            AWS Cloud                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│   ┌──────────────────────────────────────────────────────────────┐   │
-│   │                    Kubernetes Cluster                        │   │
-│   │                                                               │   │
-│   │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │   │
-│   │   │   Frontend   │    │   Backend    │    │   Database   │  │   │
-│   │   │   (React)    │───▶│   (Flask)    │───▶│ (PostgreSQL) │  │   │
-│   │   │              │    │              │    │              │  │   │
-│   │   │  Replicas: 2 │    │  Replicas: 2 │    │ Replicas: 1  │  │   │
-│   │   │  HPA: 2-10   │    │  HPA: 2-20   │    │ StatefulSet  │  │   │
-│   │   └──────────────┘    └──────────────┘    └──────────────┘  │   │
-│   │                                                               │   │
-│   │   ┌──────────────────────────────────────────────────────┐  │   │
-│   │   │              Data Structure Services                  │  │   │
-│   │   │  ┌──────┐  ┌──────────┐  ┌──────┐                    │  │   │
-│   │   │  │Stack │  │LinkedList│  │Graph │                    │  │   │
-│   │   │  │ (C)  │  │  (Java)  │  │(Py)  │                    │  │   │
-│   │   │  └──────┘  └──────────┘  └──────┘                    │  │   │
-│   │   └──────────────────────────────────────────────────────┘  │   │
-│   │                                                               │   │
-│   │   ┌──────────────────────────────────────────────────────┐  │   │
-│   │   │              Monitoring Stack                        │  │   │
-│   │   │  ┌──────────┐         ┌──────────┐                    │  │   │
-│   │   │  │Prometheus│────────▶│ Grafana │                    │  │   │
-│   │   │  │          │         │          │                    │  │   │
-│   │   │  │ Metrics  │         │Dashboards│                    │  │   │
-│   │   │  │  Alerts  │         │  Alerts  │                    │  │   │
-│   │   │  └──────────┘         └──────────┘                    │  │   │
-│   │   └──────────────────────────────────────────────────────┘  │   │
-│   │                                                               │   │
-│   │   ┌──────────────┐                                           │   │
-│   │   │   Ingress    │◀── External Traffic                      │   │
-│   │   │  Controller  │                                           │   │
-│   │   └──────────────┘                                           │   │
-│   │                                                               │   │
-│   └──────────────────────────────────────────────────────────────┘   │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
-                              ▲
-                              │
-                    ┌─────────┴─────────┐
-                    │   CI/CD Pipeline   │
-                    │     (Jenkins)      │
-                    │                    │
-                    │  ┌──────────────┐  │
-                    │  │  Build       │  │
-                    │  │  Test        │  │
-                    │  │  Scan        │  │
-                    │  │  Deploy      │  │
-                    │  └──────────────┘  │
-                    └─────────┬─────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    │  GitHub Repos     │
-                    │  Frontend/Backend │
-                    └───────────────────┘
+AWS EC2 (single node)
+└─ Minikube (control-plane + worker)
+   ├─ Ingress NGINX (port 80)
+   │   ├─ /        -> frontend-service (Nginx static UI)
+   │   └─ /api     -> backend-service (Flask)
+   ├─ backend-service (Python/Flask)
+   │   └─ calls data-structure services
+   ├─ ui-service (Nginx static content)
+   ├─ stack-service (C)
+   ├─ linkedlist-service (Java 17)
+   ├─ graph-service (Python)
+   └─ Monitoring
+       ├─ Prometheus (scrapes pods, /metrics)
+       └─ Grafana (dashboards)
 ```
 
-## Component Details
+## Components
 
-### 1. Frontend Service
+### Ingress & Routing
+- Ingress controller: NGINX (kubernetes/ingress-controller).
+- Main ingress: `kubernetes/ingress/main-ingress.yaml`
+  - `/` -> `frontend-service`
+  - `/api` -> `backend-service`
 
-**Technology Stack:**
-- Framework: React/Vue.js
-- Web Server: Nginx
-- Container: Multi-stage Docker build
+### Frontend (ui-service)
+- Static Nginx serving `index.html`, `app.js`, `styles.css`.
+- Image: `ui-service:latest`.
+- Manifests: `kubernetes/frontend/`.
+- HPA: frontend-hpa (CPU-based).
 
-**Deployment:**
-- Type: Kubernetes Deployment
-- Replicas: 2 (minimum)
-- Auto-scaling: 2-10 pods (CPU 70%)
-- Resources:
-  - Requests: 100m CPU, 128Mi Memory
-  - Limits: 500m CPU, 256Mi Memory
+### Backend (backend-service)
+- Python Flask API.
+- Image: `backend-service:latest`.
+- Manifests: `kubernetes/backend/`.
+- HPA: backend-hpa (CPU-based).
+- Talks to data-structure services over ClusterIP.
 
-**Health Checks:**
-- Liveness: `/health`
-- Readiness: `/health`
+### Data-Structure Services
+- `stack-service` (C, port 5001)
+- `linkedlist-service` (Java 17, port 5002)
+- `graph-service` (Python, port 5003)
+- Manifests: `kubernetes/data-structures/`.
 
-**Configuration:**
-- API URL via ConfigMap
-- Environment via Helm values
+### Monitoring
+- Prometheus deployment: `kubernetes/monitoring/prometheus/`.
+- Grafana deployment & dashboards: `kubernetes/monitoring/grafana/`.
+- Grafana datasource: Prometheus at `http://prometheus-service:9090/prometheus`.
 
-### 2. Backend Service
+### CI/CD (reference)
+- Jenkinsfile present for cloning/building/deploying; not required for manual runs.
 
-**Technology Stack:**
-- Framework: Flask
-- WSGI Server: Gunicorn
-- Database: PostgreSQL (SQLAlchemy)
-- Metrics: Prometheus client
+## Infrastructure
 
-**Deployment:**
-- Type: Kubernetes Deployment
-- Replicas: 2 (minimum)
-- Auto-scaling: 2-20 pods (CPU 70%)
-- Resources:
-  - Requests: 200m CPU, 256Mi Memory
-  - Limits: 1000m CPU, 512Mi Memory
+- Terraform (aws-infrastrucutre-terraform) provisions:
+  - VPC, subnets, SGs, and one EC2 host.
+  - SSH key: `modules/ec2/keys/stack_key.pem`.
+- Minikube runs inside the EC2 host using the Docker driver.
+- Docker builds are executed against Minikube’s Docker daemon to avoid pull/push to a registry.
 
-**Endpoints:**
-- `/health` - Basic health check
-- `/health/ready` - Readiness (DB connected)
-- `/health/live` - Liveness probe
-- `/metrics` - Prometheus metrics
-- `/api/*` - REST API endpoints
-
-**Metrics Exposed:**
-- `http_requests_total` (counter)
-- `http_request_duration_seconds` (histogram)
-- `http_requests_in_progress` (gauge)
-- `db_connections_active` (gauge)
-
-**Configuration:**
-- Database URL from Secret
-- Service URLs from ConfigMap
-- Environment variables from Helm
-
-### 3. Database Service
-
-**Technology Stack:**
-- Database: PostgreSQL 15
-- Storage: Persistent Volume Claim
-
-**Deployment:**
-- Type: StatefulSet
-- Replicas: 1
-- Storage: 10Gi PVC
-- Resources:
-  - Requests: 250m CPU, 256Mi Memory
-  - Limits: 1000m CPU, 512Mi Memory
-
-**Configuration:**
-- Credentials from Kubernetes Secrets
-- Database name: `appdb`
-- User: `appuser`
-
-### 4. Data Structure Services
-
-**Stack Service (C):**
-- Port: 5001
-- Language: C
-- Endpoint: `/stack`
-
-**LinkedList Service (Java):**
-- Port: 5002
-- Language: Java
-- Endpoint: `/linkedlist`
-
-**Graph Service (Python):**
-- Port: 5003
-- Language: Python
-- Endpoint: `/graph`
-
-### 5. Monitoring Stack
-
-#### Prometheus
-
-**Configuration:**
-- Scrape interval: 15s
-- Retention: 15 days
-- Targets:
-  - Kubernetes pods (auto-discovery)
-  - Backend service
-  - Frontend service
-  - Data structure services
-
-**Alert Rules:**
-- High error rate (>5%)
-- High latency (p95 >1s)
-- Pod restarts
-- Database connection failures
-- High CPU/Memory usage
-
-#### Grafana
-
-**Dashboards:**
-1. **Application Dashboard**
-   - Request rate
-   - Error rate
-   - Response time (p50, p95, p99)
-   - Active connections
-
-2. **Kubernetes Dashboard**
-   - Pod status
-   - Resource usage
-   - Node health
-   - Deployment status
-
-**Data Source:**
-- Prometheus (default)
-
-### 6. CI/CD Pipeline
-
-**Jenkins Pipeline Stages:**
-
-1. **Checkout**
-   - Clone DevOps repo
-   - Clone Frontend repo
-   - Clone Backend repo
-
-2. **Build**
-   - Build Docker images
-   - Multi-stage builds
-   - Optimized layer caching
-
-3. **Test**
-   - Unit tests
-   - Integration tests
-   - Linting
-
-4. **Scan**
-   - Security scanning (Trivy)
-   - Code quality checks
-
-5. **Tag**
-   - Build number tag
-   - Git SHA tag
-   - Latest tag
-
-6. **Push**
-   - Push to container registry
-   - Production only
-
-7. **Deploy**
-   - Deploy via Helm
-   - Environment-specific values
-   - Rolling updates
-
-8. **Verify**
-   - Health checks
-   - Integration tests
-   - Smoke tests
-
-**Pipeline Files:**
-- `Jenkinsfile` - Main orchestration
-- `Jenkinsfile.frontend` - Frontend pipeline
-- `Jenkinsfile.backend` - Backend pipeline
-
-### 7. Infrastructure as Code
-
-#### Terraform Modules
-
-**Networking Module:**
-- VPC with CIDR
-- Public subnets
-- Private subnets
-- Internet Gateway
-- NAT Gateway (optional)
-- Route tables
-
-**Kubernetes Module:**
-- Namespace creation
-- Deployment application
-- Service creation
-- HPA configuration
-- Ingress setup
-
-**Database Module:**
-- RDS PostgreSQL instance
-- Security groups
-- Subnet groups
-- Secrets Manager integration
-- Backup configuration
-
-#### Helm Charts
-
-**Backend Chart:**
-- Environment awareness
-- Feature toggles
-- Configurable scaling
-- Resource management
-
-**Frontend Chart:**
-- Environment awareness
-- Feature toggles
-- Configurable scaling
-- Resource management
-
-## Data Flow
-
-### Request Flow
+## Repository Structure
 
 ```
-User Request
-    ↓
-Load Balancer / Ingress
-    ↓
-Frontend Service (2+ pods)
-    ↓
-Backend Service (2+ pods)
-    ↓
-Database (PostgreSQL)
-    ↓
-Response
+aks_data_structures_devops/
+├─ ARCHITECTURE.md
+├─ aws-infrastrucutre-terraform/        # Terraform: VPC + EC2
+│  ├─ environments/dev/                 # tfvars/backend for dev
+│  ├─ modules/                          # vpc, sg, ec2
+│  ├─ setup.sh / destroy.sh             # infra provision/teardown
+├─ devops-infra/                        # App platform (K8s/Minikube)
+│  ├─ scripts/                          # main entrypoints
+│  │  ├─ devops-setup.sh                # deploy platform on EC2/Minikube
+│  │  └─ devops-destroy.sh              # tear down platform
+│  ├─ kubernetes/                       # manifests
+│  │  ├─ namespaces/
+│  │  ├─ frontend/                      # UI
+│  │  ├─ backend/                       # API + secrets/config
+│  │  ├─ data-structures/               # stack/linkedlist/graph deployments
+│  │  ├─ ingress/                       # routing rules
+│  │  ├─ ingress-controller/            # NGINX controller
+│  │  └─ monitoring/                    # Prometheus/Grafana
+│  ├─ helm/                             # Helm charts (backend, etc.)
+│  ├─ jenkins/                          # Jenkins pipeline files
+│  ├─ README*.md                        # platform docs
+│  └─ old_setup.sh                      # legacy setup script (reference)
+├─ linkedlist/                          # Java linked-list service Docker ctx
+├─ stack/                               # C stack service Docker ctx
+├─ graph/                               # Python graph service Docker ctx
+├─ Jenkinsfile-EC2                      # Jenkins pipeline example
+└─ utils/ (if present)                  # supporting assets
 ```
 
-### Metrics Flow
+## Deployment Flow (scripts)
 
-```
-Application Pods
-    ↓
-Prometheus Scraping (15s interval)
-    ↓
-Prometheus Storage (15 days retention)
-    ↓
-Grafana Visualization
-    ↓
-Dashboards & Alerts
-```
+1) **Infrastructure (Terraform)**
+   - Path: `aws-infrastrucutre-terraform/setup.sh`
+   - Creates VPC + EC2, outputs EC2 public IP.
 
-### CI/CD Flow
+2) **App Platform (Kubernetes on EC2 Minikube)**
+   - Path: `devops-infra/scripts/devops-setup.sh`
+   - Does:
+     - Prereq checks
+     - Ensures Minikube up and kubectl context set
+     - Clones backend/frontend if missing (EC2 paths /home/ubuntu/backend, /home/ubuntu/frontend)
+     - Builds Docker images inside Minikube’s Docker daemon
+     - Forces `imagePullPolicy: IfNotPresent`
+     - Applies namespaces, services, deployments, ingress, monitoring
+     - Starts port-forward systemd service on port 80 (EC2)
 
-```
-GitHub Push
-    ↓
-Webhook Trigger
-    ↓
-Jenkins Pipeline
-    ↓
-Build & Test
-    ↓
-Docker Image
-    ↓
-Container Registry
-    ↓
-Kubernetes Deployment (Helm)
-    ↓
-Running Application
-```
+3) **Cleanup**
+   - Platform teardown: `devops-infra/scripts/devops-destroy.sh`
+   - Infrastructure teardown: `aws-infrastrucutre-terraform/destroy.sh`
 
-## Security
+## Observability & Ports
 
-### Secrets Management
+- Ingress: port 80 on EC2 (systemd port-forward to ingress-nginx service).
+- Prometheus: `kubectl port-forward svc/prometheus-service 9090:9090`
+- Grafana: `kubectl port-forward svc/grafana-service 3000:3000`
+- Logs: `kubectl logs -f deployment/<name>`
 
-- **Kubernetes Secrets**: Database credentials, API keys
-- **AWS Secrets Manager**: RDS passwords (for cloud)
-- **Base64 encoding**: For Kubernetes secrets
+## Notable Behaviors
 
-### Network Security
+- `imagePullPolicy` is auto-fixed to `IfNotPresent` to use local images.
+- ErrImageNeverPull pods are cleaned before redeploy.
+- Port-forward runs as systemd on EC2 (k8s-port-forward.service).
 
-- **Security Groups**: Restrict database access
-- **Network Policies**: (Optional) Pod-to-pod communication
-- **TLS/SSL**: (Optional) Ingress with cert-manager
+## Runbook (quick)
 
-### Container Security
+1. Provision AWS infra:
+   ```
+   cd aws-infrastrucutre-terraform
+   ./setup.sh
+   ```
+2. SSH to EC2 (stack_key.pem output by Terraform).
+3. On EC2, deploy platform:
+   ```
+   cd ~/aks_data_structures_devops/devops-infra/scripts
+   ./devops-setup.sh
+   ```
+4. Access:
+   - Frontend: http://<EC2_PUBLIC_IP>/
+   - API: http://<EC2_PUBLIC_IP>/api/
+5. Teardown platform:
+   ```
+   cd ~/aks_data_structures_devops/devops-infra/scripts
+   ./devops-destroy.sh
+   ```
+6. Teardown AWS infra (locally):
+   ```
+   cd aws-infrastrucutre-terraform
+   ./destroy.sh
+   ```
 
-- **Non-root users**: All containers run as non-root
-- **Image scanning**: Trivy security scans
-- **Resource limits**: Prevent resource exhaustion
+## Security & Credentials
 
-## Scalability
+- Repos are public; cloning uses HTTPS. If credentials are needed, update URLs accordingly.
+- Secrets: backend secrets from `kubernetes/backend/secret.yaml` (base64-encoded).
+- No external DB; services are stateless for this deployment.
 
-### Horizontal Pod Autoscaling (HPA)
+## Scaling & Limits (current defaults)
 
-**Frontend:**
-- Min replicas: 2
-- Max replicas: 10
-- Target CPU: 70%
+- Frontend HPA: min 1, max 10 (CPU target in HPA manifest).
+- Backend HPA: min 1, max 20 (CPU target in HPA manifest).
+- Data-structure services: single replica each.
 
-**Backend:**
-- Min replicas: 2
-- Max replicas: 20
-- Target CPU: 70%
+## Known Constraints
 
-### Database Scaling
-
-- **Vertical scaling**: Increase instance class
-- **Read replicas**: (Optional) For read-heavy workloads
-- **Connection pooling**: Managed by application
-
-## High Availability
-
-### Application Level
-
-- **Multiple replicas**: Minimum 2 pods per service
-- **Rolling updates**: Zero-downtime deployments
-- **Health checks**: Automatic pod replacement
-
-### Infrastructure Level
-
-- **Multi-AZ deployment**: (AWS) Across availability zones
-- **Persistent storage**: Database with backups
-- **Load balancing**: Ingress controller
-
-## Monitoring & Observability
-
-### Metrics
-
-- **Application metrics**: Request rate, latency, errors
-- **Infrastructure metrics**: CPU, memory, disk
-- **Database metrics**: Connections, queries, performance
-
-### Logging
-
-- **Container logs**: `kubectl logs`
-- **Centralized logging**: (Optional) EFK/Loki stack
-
-### Tracing
-
-- **Distributed tracing**: (Optional) Jaeger integration
-
-## Disaster Recovery
-
-### Backups
-
-- **Database backups**: Automated daily backups
-- **Retention**: 7 days (configurable)
-- **Snapshot**: Before major changes
-
-### Recovery Procedures
-
-1. **Database restore**: From automated backups
-2. **Application rollback**: Helm rollback command
-3. **Infrastructure restore**: Terraform state management
-
-## Cost Optimization
-
-### Resource Management
-
-- **Right-sizing**: Appropriate resource requests/limits
-- **Auto-scaling**: Scale down during low traffic
-- **Spot instances**: (Optional) For non-critical workloads
-
-### Storage
-
-- **PVC sizing**: Appropriate storage allocation
-- **Cleanup policies**: Remove unused resources
-
-## Best Practices
-
-### Development
-
-- **Git branching**: Feature branches, main/master for production
-- **Code reviews**: Required before merge
-- **Testing**: Unit and integration tests
-
-### Deployment
-
-- **Blue-green**: (Optional) Zero-downtime deployments
-- **Canary**: (Optional) Gradual rollout
-- **Rollback**: Quick rollback capability
-
-### Operations
-
-- **Monitoring**: 24/7 monitoring with alerts
-- **Documentation**: Keep documentation updated
-- **Incident response**: Defined procedures
-
----
-
-For deployment instructions, see [DEPLOYMENT.md](devops-infra/DEPLOYMENT.md).
+- Single-node Minikube; no multi-AZ or external DB.
+- Uses local Docker daemon in Minikube; no remote registry.
+- Systemd port-forward assumes Ubuntu + sudo.
 
