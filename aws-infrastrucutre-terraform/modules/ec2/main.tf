@@ -37,6 +37,7 @@ resource "null_resource" "bootstrap" {
 
   provisioner "remote-exec" {
     inline = [
+      "sleep 60",
       "chmod +x /home/${var.ssh_user}/bootstrap.sh",
       "sudo -E /home/${var.ssh_user}/bootstrap.sh"
     ]

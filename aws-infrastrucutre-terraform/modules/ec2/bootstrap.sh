@@ -8,6 +8,10 @@ err()  { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Use SSH user even when script is run with sudo
+TARGET_USER="${SUDO_USER:-${USER:-ubuntu}}"
+TARGET_HOME="/home/${TARGET_USER}"
+
 log "Updating apt cache..."
 sudo apt-get update -y
 
