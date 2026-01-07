@@ -39,7 +39,11 @@ resource "null_resource" "bootstrap" {
     inline = [
       "sleep 60",
       "chmod +x /home/${var.ssh_user}/bootstrap.sh",
-      "sudo -E /home/${var.ssh_user}/bootstrap.sh"
+      "sudo -E /home/${var.ssh_user}/bootstrap.sh",
+      "echo 'Bootstrap complete. Running devops-setup.sh...' && sleep 5",
+      "cd /home/${var.ssh_user}/aks_data_structures_devops",
+      "chmod +x devops-infra/scripts/devops-setup.sh",
+      "./devops-infra/scripts/devops-setup.sh"
     ]
     connection {
       host        = aws_instance.this.public_ip

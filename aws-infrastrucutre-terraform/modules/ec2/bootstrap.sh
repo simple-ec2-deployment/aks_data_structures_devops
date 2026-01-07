@@ -127,21 +127,33 @@ else
   warn "User added to docker group; re-login may be required."
 fi
 
-# Ensure kubectl/minikube directories exist and owned by ssh user
-sudo mkdir -p /home/${USER}/.kube /home/${USER}/.minikube
-sudo chown -R ${USER}:${USER} /home/${USER}/.kube /home/${USER}/.minikube
+# Ensure kubectl/minikube directories exist and are owned by the SSH user
+sudo mkdir -p "${TARGET_HOME}/.kube" "${TARGET_HOME}/.minikube"
+sudo chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.kube" "${TARGET_HOME}/.minikube"
 
-# Clone infrastructure repo (idempotent)
+# Clone infrastructure repo (idempotent) into the SSH user's home
 REPO_URL="${REPO_URL:-https://github.com/simple-ec2-deployment/aks_data_structures_devops.git}"
-REPO_DIR="/home/${USER}/aks_data_structures_devops"
+REPO_DIR="${TARGET_HOME}/aks_data_structures_devops"
 if [ ! -d "$REPO_DIR/.git" ]; then
   log "Cloning infrastructure repo to $REPO_DIR"
-  git clone "$REPO_URL" "$REPO_DIR" || warn "Clone failed; please check credentials or network"
+  for i in {1..3}; do
+    if sudo -u "${TARGET_USER}" git clone "$REPO_URL" "$REPO_DIR"; then
+      log "Clone successful on attempt $i"
+      break
+    else
+      warn "Clone attempt $i failed; retrying in 10s..."
+      sleep 10
+    fi
+  done
+  if [ ! -d "$REPO_DIR/.git" ]; then
+    err "All clone attempts failed. Please check network or repo access."
+    exit 1
+  fi
 else
   log "Repo already present at $REPO_DIR"
-  (cd "$REPO_DIR" && git pull --ff-only || warn "Git pull failed; please check repo access")
+  (cd "$REPO_DIR" && sudo -u "${TARGET_USER}" git pull --ff-only || warn "Git pull failed; please check repo access")
 fi
-sudo chown -R ${USER}:${USER} "$REPO_DIR"
+sudo chown -R "${TARGET_USER}:${TARGET_USER}" "$REPO_DIR"
 
 log "Versions:"
 if need_cmd kubectl; then kubectl version --client || true; else warn "kubectl not found"; fi
