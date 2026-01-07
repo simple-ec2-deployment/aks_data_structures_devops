@@ -15,7 +15,8 @@ NC='\033[0m' # No Color
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"           # devops-infra directory
+REPO_ROOT="$(dirname "$PROJECT_ROOT")"            # repository root (one level above devops-infra)
 
 # Default configuration
 ENVIRONMENT="${1:-dev}"
@@ -349,14 +350,14 @@ docker"
         print_warning "Frontend source not found, skipping build"
     fi
     
-    # Build data structure services
+    # Build data structure services (stack, linkedlist, graph) from repo root
     for service in stack linkedlist graph; do
-        if [ -d "$PROJECT_ROOT/$service" ]; then
+        if [ -d "$REPO_ROOT/$service" ]; then
             echo "Building ${service}-service..."
-            $DOCKER_CMD build -t "${service}-service:latest" "$PROJECT_ROOT/$service" || print_warning "${service} build failed"
+            $DOCKER_CMD build -t "${service}-service:latest" "$REPO_ROOT/$service" || print_warning "${service} build failed"
             print_status "${service}-service:latest built"
         else
-            print_warning "$service source not found, skipping build"
+            print_warning "$service source not found under $REPO_ROOT, skipping build"
         fi
     done
     
@@ -383,6 +384,7 @@ fi
 # Deploy Kubernetes resources
 print_header "Step 5: Deploying Kubernetes Resources"
 
+# devops-infra root (contains kubernetes/, ingress/, monitoring/, etc.)
 DEVOPS_INFRA="$PROJECT_ROOT"
 
 # Fix imagePullPolicy in deployment manifests (change Never to IfNotPresent for Minikube)
