@@ -69,6 +69,37 @@ if ! need_cmd jenkins; then
   echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list >/dev/null
   sudo apt-get update -y
   sudo apt-get install -y jenkins
+  
+  log "Configuring Jenkins for automated setup..."
+  
+  # Create Jenkins directories
+  sudo mkdir -p /var/lib/jenkins/init.groovy.d
+  sudo mkdir -p /var/lib/jenkins/casc_configs
+  
+  # Copy Jenkins configuration files from repository
+  if [ -d "${TARGET_HOME}/aks_data_structures_devops/devops-infra/jenkins/jenkins-config" ]; then
+    # Copy JCasC configuration
+    sudo cp "${TARGET_HOME}/aks_data_structures_devops/devops-infra/jenkins/jenkins-config/jenkins.yaml" /var/lib/jenkins/casc_configs/ || true
+    
+    # Copy init groovy scripts
+    sudo cp "${TARGET_HOME}/aks_data_structures_devops/devops-infra/jenkins/jenkins-config/init.groovy.d/"*.groovy /var/lib/jenkins/init.groovy.d/ || true
+    
+    # Copy plugins.txt
+    sudo cp "${TARGET_HOME}/aks_data_structures_devops/devops-infra/jenkins/jenkins-config/plugins.txt" /var/lib/jenkins/ || true
+    
+    # Set proper ownership
+    sudo chown -R jenkins:jenkins /var/lib/jenkins/init.groovy.d
+    sudo chown -R jenkins:jenkins /var/lib/jenkins/casc_configs
+    sudo chown jenkins:jenkins /var/lib/jenkins/plugins.txt
+    
+    log "Jenkins configuration files copied successfully"
+  else
+    warn "Jenkins configuration directory not found, using default setup"
+  fi
+  
+  # Set Jenkins Configuration as Code environment variable
+  echo 'CASC_JENKINS_CONFIG=/var/lib/jenkins/casc_configs/jenkins.yaml' | sudo tee -a /etc/default/jenkins >/dev/null
+  
   sudo systemctl enable jenkins >/dev/null 2>&1 || true
   sudo systemctl start jenkins  >/dev/null 2>&1 || true
 else
@@ -87,15 +118,18 @@ sudo systemctl enable jenkins >/dev/null 2>&1 || true
 sudo systemctl restart jenkins  >/dev/null 2>&1 || true
 
 # Wait briefly for Jenkins to start and then print admin password and URL
-log "Checking Jenkins status and admin password..."
+log "Checking Jenkins status and configuring automated setup..."
 for i in $(seq 1 12); do
   if sudo systemctl is-active --quiet jenkins; then
-    if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
-      ADMIN_PASS=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || true)
-      if [ -n "$ADMIN_PASS" ]; then
-        log "Jenkins admin password: $ADMIN_PASS"
-      fi
+    log "Jenkins is running, configuring automated admin setup..."
+    
+    # Install plugins if the script exists
+    if [ -f "${TARGET_HOME}/aks_data_structures_devops/devops-infra/jenkins/jenkins-config/install-plugins.sh" ]; then
+      log "Installing Jenkins plugins..."
+      sudo "${TARGET_HOME}/aks_data_structures_devops/devops-infra/jenkins/jenkins-config/install-plugins.sh" || warn "Plugin installation failed"
     fi
+    
+    # Get public IP for Jenkins URL
     PUB_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)
     if [ -z "$PUB_IP" ]; then
       PUB_IP=$(curl -s https://checkip.amazonaws.com || true)
@@ -108,6 +142,7 @@ for i in $(seq 1 12); do
     fi
     if [ -n "$PUB_IP" ]; then
       log "Jenkins URL: http://${PUB_IP}:8080/"
+      log "Admin credentials: username=admin, password=admin123"
     else
       warn "Could not determine public IP for Jenkins URL."
     fi
@@ -165,20 +200,17 @@ if need_cmd python3; then python3 --version || true; else warn "python3 not foun
 if need_cmd aws; then aws --version || true; else warn "aws not found"; fi
 
 if need_cmd jenkins; then
-  log "Jenkins detected; showing admin info..."
-  if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
-    ADMIN_PASS=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || true)
-    if [ -n "$ADMIN_PASS" ]; then
-      log "Jenkins admin password: $ADMIN_PASS"
-    else
-      warn "Jenkins admin password file empty or unreadable."
-    fi
-  else
-    warn "Jenkins admin password file not found yet."
-  fi
+  log "Jenkins detected; automated setup configured..."
+  log "Jenkins has been configured with automated admin setup:"
+  log "  - Username: admin"
+  log "  - Password: admin123"
+  log "  - Email: admin@example.com"
+  log "  - Recommended plugins will be installed automatically"
+  
   PUB_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || hostname -I | awk '{print $1}')
   if [ -n "$PUB_IP" ]; then
     log "Jenkins URL: http://${PUB_IP}:8080/"
+    log "Login with admin/admin123 - no setup wizard required!"
   fi
 fi
 

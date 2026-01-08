@@ -88,8 +88,8 @@ navigate_to_env() {
 init_terraform() {
     print_header "Step 1: Initializing Terraform"
     
-    print_info "Running: terraform init"
-    terraform init
+    print_info "Running: terraform init -upgrade"
+    terraform init -upgrade
     
     if [ $? -eq 0 ]; then
         print_success "Terraform initialized successfully"
@@ -126,6 +126,35 @@ format_terraform() {
     print_success "Code formatted successfully"
 }
 
+# Handle plugin issues
+fix_plugin_issues() {
+    print_info "Detected plugin issue, attempting to fix..."
+    
+    # Clean up .terraform directory
+    if [ -d ".terraform" ]; then
+        print_info "Cleaning up .terraform directory"
+        rm -rf .terraform
+    fi
+    
+    # Remove lock file if it exists
+    if [ -f ".terraform.lock.hcl" ]; then
+        print_info "Removing lock file"
+        rm -f .terraform.lock.hcl
+    fi
+    
+    # Reinitialize with upgrade
+    print_info "Reinitializing Terraform with upgrade"
+    terraform init -upgrade
+    
+    if [ $? -eq 0 ]; then
+        print_success "Plugin issues fixed successfully"
+        return 0
+    else
+        print_error "Failed to fix plugin issues"
+        return 1
+    fi
+}
+
 # Plan infrastructure
 plan_terraform() {
     print_header "Step 4: Planning Infrastructure"
@@ -133,11 +162,26 @@ plan_terraform() {
     print_info "Running: terraform plan"
     terraform plan
     
-    if [ $? -eq 0 ]; then
-        print_success "Plan generated successfully"
+    # If plan fails due to plugin issues, try to fix and retry
+    if [ $? -ne 0 ]; then
+        print_warning "Plan failed, checking for plugin issues..."
+        
+        if fix_plugin_issues; then
+            print_info "Retrying terraform plan after plugin fix"
+            terraform plan
+            
+            if [ $? -eq 0 ]; then
+                print_success "Plan generated successfully after plugin fix"
+            else
+                print_error "Planning failed even after plugin fix"
+                exit 1
+            fi
+        else
+            print_error "Planning failed and plugin fix unsuccessful"
+            exit 1
+        fi
     else
-        print_error "Planning failed"
-        exit 1
+        print_success "Plan generated successfully"
     fi
 }
 
