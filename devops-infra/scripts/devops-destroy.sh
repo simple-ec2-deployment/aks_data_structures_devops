@@ -65,6 +65,10 @@ else
     EC2_ENV=false
 fi
 
+if [ "$EC2_ENV" = true ] && [ -z "${KUBECONFIG:-}" ] && [ -f /home/ubuntu/.kube/config ]; then
+    export KUBECONFIG=/home/ubuntu/.kube/config
+fi
+
 # Warning and confirmation
 print_header "⚠️  WARNING: This will delete all deployed resources!"
 
@@ -125,7 +129,7 @@ fi
 
 # Remove ingress port-forward logs
 if [ -f /tmp/ingress-port-forward.log ]; then
-    rm -f /tmp/ingress-port-forward.log
+    sudo rm -f /tmp/ingress-port-forward.log 2>/dev/null || rm -f /tmp/ingress-port-forward.log 2>/dev/null || true
     print_status "Port-forward logs removed"
 fi
 
